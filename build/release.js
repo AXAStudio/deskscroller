@@ -44,15 +44,16 @@ async function gh(method, url, body) {
   return res.json();
 }
 
+// Exiting with process.exit() while fetch's sockets are still closing crashes
+// Node on Windows, so failures throw and the exit code is set at the end.
+const fail = (msg, code = 1) => { throw Object.assign(new Error(msg), { code }); };
+
 // The releases list includes drafts, which "get release by tag" doesn't.
 const findRelease = async () => (await gh('GET', `${API}/releases?per_page=100`)).find((r) => r.tag_name === tag);
 
 (async () => {
   let release = await findRelease();
-  if (release && !release.draft) {
-    console.error(`${tag} is already published. Bump "version" in package.json first.`);
-    process.exit(1);
-  }
+  if (release && !release.draft) fail(`${tag} is already published. Bump "version" in package.json first.`);
   if (!release) {
     release = await gh('POST', `${API}/releases`, { tag_name: tag, name: pkg.version, draft: true });
     console.log(`Created draft release ${tag}.`);
@@ -63,20 +64,14 @@ const findRelease = async () => (await gh('GET', `${API}/releases?per_page=100`)
     stdio: 'inherit',
     env: { ...process.env, GH_TOKEN: TOKEN },
   });
-  if (build.status !== 0) {
-    console.error(`Build or upload failed; the draft ${tag} is still on GitHub. Fix the problem and run this again.`);
-    process.exit(build.status || 1);
-  }
+  if (build.status !== 0) fail(`Build or upload failed; the draft ${tag} is still on GitHub. Fix the problem and run this again.`, build.status || 1);
 
   const names = (await gh('GET', `${API}/releases/${release.id}/assets`)).map((a) => a.name);
   const missing = ['latest.yml', `DeskScroller-Setup-${pkg.version}.exe`].filter((n) => !names.includes(n));
-  if (missing.length) {
-    console.error(`Upload incomplete (missing ${missing.join(', ')}); leaving ${tag} as a draft.`);
-    process.exit(1);
-  }
+  if (missing.length) fail(`Upload incomplete (missing ${missing.join(', ')}); leaving ${tag} as a draft.`);
   await gh('PATCH', `${API}/releases/${release.id}`, { draft: false, make_latest: 'true' });
   console.log(`Published ${tag}: https://github.com/${owner}/${repo}/releases/tag/${tag}`);
 })().catch((err) => {
   console.error(err.message || err);
-  process.exit(1);
+  process.exitCode = typeof err.code === 'number' ? err.code : 1;
 });
