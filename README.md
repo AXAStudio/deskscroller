@@ -42,7 +42,7 @@ Set `DESKSCROLLER_PROFILE` to a folder to run a second, independent copy with it
 ## Releasing an update
 
 1. Bump `version` in `package.json` (e.g. `1.0.0` → `1.0.1`).
-2. Set a GitHub token with access to this repo: `set GH_TOKEN=<token>` (cmd) or `$env:GH_TOKEN = '<token>'` (PowerShell).
-3. Run `npm run release`. It builds the installer and publishes it, with `latest.yml`, as a GitHub release. Installed copies pick it up on their next check.
+2. Optional: set `GH_TOKEN` to a GitHub token with access to this repo. Without it, the GitHub login saved in git is used.
+3. Run `npm run release`. It builds the installer, uploads it with `latest.yml` to a draft GitHub release, and publishes the release once every file is up. Installed copies pick it up on their next check.
 
 `npm run dist` builds the installer into `dist/` without publishing.

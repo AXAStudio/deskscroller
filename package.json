@@ -11,7 +11,7 @@
     "start": "electron .",
     "icon": "node build/make-icon.js",
     "dist": "npm run icon && electron-builder --win",
-    "release": "npm run icon && electron-builder --win --publish always"
+    "release": "npm run icon && node build/release.js"
   },
   "build": {
     "appId": "com.axastudio.deskscroller",
