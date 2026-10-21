@@ -189,7 +189,7 @@ function openCase() {
   syncPlayback();
   const won = EFFECTS.roll();
   const strip = $('#case-strip');
-  strip.replaceChildren(...Array.from({ length: REEL_ITEMS }, (_, i) => card(i === WIN_AT ? won : EFFECTS.roll())));
+  strip.replaceChildren(...Array.from({ length: REEL_ITEMS }, (_, i) => card(i === WIN_AT ? won : EFFECTS.rollReel())));
   strip.style.transition = 'none';
   strip.style.transform = 'translateX(0)';
   $('#case').classList.remove('revealed', 'gold');

@@ -10,7 +10,8 @@
 
 (function (root) {
   const RARITIES = {
-    blue: { name: 'Mil-Spec', color: '#4b69ff', weight: 7968 },
+    // CS:GO's Mil-Spec (#4b69ff) reads as purple next to Restricted, so a clearer blue.
+    blue: { name: 'Mil-Spec', color: '#2f80ff', weight: 7968 },
     purple: { name: 'Restricted', color: '#8847ff', weight: 1598 },
     pink: { name: 'Classified', color: '#d32ce6', weight: 320 },
     red: { name: 'Covert', color: '#eb4b4b', weight: 64 },
@@ -84,16 +85,23 @@
 
   const BY_ID = Object.fromEntries(ITEMS.map((i) => [i.id, i]));
 
-  // One random item, rarity first (by CS:GO odds), then evenly within it.
-  function roll(rand = Math.random) {
-    const total = Object.values(RARITIES).reduce((s, r) => s + r.weight, 0);
+  // The items filling the spinning reel around the prize. Like case reels do,
+  // they're a richer mix than the real odds; what you win still uses those.
+  const REEL_WEIGHTS = { blue: 50, purple: 27, pink: 14, red: 7, gold: 2 };
+
+  // One random item, rarity first (by CS:GO odds, or `weights`), then evenly within it.
+  function roll(rand = Math.random, weights = null) {
+    const w = weights || Object.fromEntries(Object.entries(RARITIES).map(([k, r]) => [k, r.weight]));
+    const total = Object.values(w).reduce((s, x) => s + x, 0);
     let x = rand() * total, rarity = 'blue';
-    for (const [key, r] of Object.entries(RARITIES)) {
-      if ((x -= r.weight) < 0) { rarity = key; break; }
+    for (const [key, weight] of Object.entries(w)) {
+      if ((x -= weight) < 0) { rarity = key; break; }
     }
     const pool = ITEMS.filter((i) => i.rarity === rarity);
     return pool[Math.floor(rand() * pool.length)];
   }
 
-  root.EFFECTS = { RARITIES, ITEMS, BY_ID, roll };
+  const rollReel = () => roll(Math.random, REEL_WEIGHTS);
+
+  root.EFFECTS = { RARITIES, ITEMS, BY_ID, roll, rollReel };
 })(typeof window !== 'undefined' ? window : globalThis);
