@@ -31,7 +31,9 @@ html, body {
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
 svg { width: 18px; height: 18px; display: block; flex: none; }
 
-#app { position: fixed; inset: 0; overflow: hidden; }
+/* The narrow-window rules are container queries on #app, not media queries: under
+   anti-stretch the page lays out wider than the window it is squeezed into. */
+#app { position: fixed; inset: 0; overflow: hidden; container-type: inline-size; }
 #app[data-site="yt"] { --accent: #ff2d2d; }
 #app[data-site="ig"] { --accent: #d62976; }
 #app[data-site="tt"] { --accent: #fe2c55; }
@@ -77,17 +79,17 @@ svg { width: 18px; height: 18px; display: block; flex: none; }
 #btn-size-reset { display: none; }
 #app.resized #btn-size-reset { display: grid; }
 /* Make room for it at narrow widths: the active tab drops its label. */
-@media (max-width: 440px) {
+@container (max-width: 440px) {
   #app.resized .tab.active span { max-width: 0; opacity: 0; }
   #app.resized .tab.active { gap: 0; }
 }
 /* Small presets: drop the feed's back / reload and tighten up so quit stays reachable. */
-@media (max-width: 340px) {
+@container (max-width: 340px) {
   #btn-back, #btn-reload { display: none; }
   .tab { min-width: 24px; padding: 0 3px; }
   #toolbar .icon-btn { width: 28px; }
 }
-@media (max-width: 300px) {
+@container (max-width: 300px) {
   #toolbar { gap: 3px; padding: 0 3px; }
   #toolbar .icon-btn { width: 26px; }
 }
@@ -156,7 +158,7 @@ svg { width: 18px; height: 18px; display: block; flex: none; }
 .mute-badge svg { width: 14px; height: 14px; }
 #app.muted .mute-badge { display: grid; }
 
-@media (max-width: 350px) {
+@container (max-width: 350px) {
   .tab.active span { max-width: 0; opacity: 0; }
   .tab.active { gap: 0; }
   #btn-home { display: none; }
@@ -690,7 +692,7 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .conn.on { color: var(--ok); background: rgba(61, 220, 151, .12); }
 .conn + .chev { margin-left: 6px; }
-@media (max-width: 330px) { .conn { display: none; } .conn + .chev { margin-left: auto; } }
+@container (max-width: 330px) { .conn { display: none; } .conn + .chev { margin-left: auto; } }
 
 .accounts-link {
   width: 100%;

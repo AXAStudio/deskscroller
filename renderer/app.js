@@ -659,6 +659,7 @@ function renderSettings() {
   $('#opt-ghost').checked = s.ghost;
   $('#opt-pause').checked = s.pauseOnHide;
   $('#opt-remote').checked = s.remoteDesktop;
+  $('#opt-stretch').checked = s.antiStretch;
   range.disabled = s.remoteDesktop;
   $('#btn-clickthrough').textContent = state.clickThrough ? 'Disable' : 'Enable';
   renderHotkeys();
@@ -881,6 +882,11 @@ $('#opt-ghost').addEventListener('change', async (e) => {
 $('#opt-pause').addEventListener('change', async (e) => {
   state = await ds.set({ pauseOnHide: e.target.checked });
 });
+$('#opt-stretch').addEventListener('change', async (e) => {
+  state = await ds.set({ antiStretch: e.target.checked });
+  applyStretchLayout();
+  updateResized();
+});
 $('#opt-remote').addEventListener('change', async (e) => {
   toast('Restarting DeskScroller…');
   state = await ds.set({ remoteDesktop: e.target.checked });
@@ -984,18 +990,50 @@ function renderUpdate(u) {
 ds.on('update:status', renderUpdate);
 $('#btn-check-updates').addEventListener('click', async () => renderUpdate(await ds.checkUpdates()));
 
+// ---------- Anti-stretch ----------
+// While a game runs in a stretched resolution the monitor widens everything. The
+// page then lays out at its normal size and is squeezed by the same amount, so it
+// comes out looking normal.
+
+function applyStretchLayout() {
+  const s = state.stretch;
+  if (!s) {
+    appEl.style.cssText = '';
+  } else {
+    appEl.style.cssText = `right: auto; bottom: auto; width: ${innerWidth * s.fx}px; height: ${innerHeight * s.fy}px;` +
+      ` transform: scale(${1 / s.fx}, ${1 / s.fy}); transform-origin: 0 0;`;
+  }
+  const res = (m) => `${m.width}×${m.height}`;
+  $('#stretch-text').textContent = !state.settings.antiStretch ? ''
+    : s ? `Compensating: ${res(s.current)} → ${res(s.saved)}`
+    : state.modesReadable === false ? 'Couldn’t read your monitor’s resolution' : 'Not needed right now (normal resolution)';
+}
+
+// The size the page lays out at, which is the window's size unless anti-stretch is on.
+const layoutSize = () => ({ width: innerWidth * (state.stretch?.fx || 1), height: innerHeight * (state.stretch?.fy || 1) });
+
+ds.on('state:stretch', (s) => {
+  state.stretch = s;
+  applyStretchLayout();
+  updateResized();
+  trackPill();
+});
+
 // The default-size button only shows up once the window has been resized.
 function updateResized() {
-  const d = state.defaultSize;
-  const resized = Math.abs(innerWidth - d.width) > 2 || Math.abs(innerHeight - d.height) > 2;
+  const d = state.defaultSize, size = layoutSize();
+  const resized = Math.abs(size.width - d.width) > 2 || Math.abs(size.height - d.height) > 2;
   if (resized === appEl.classList.contains('resized')) return;
   appEl.classList.toggle('resized', resized);
   trackPill();
 }
 
 window.addEventListener('resize', () => {
+  if (state) {
+    applyStretchLayout();
+    updateResized();
+  }
   trackPill();
-  if (state) updateResized();
 });
 $('#btn-size-reset').addEventListener('click', () => ds.sizePreset('default'));
 
@@ -1005,6 +1043,7 @@ $('#btn-size-reset').addEventListener('click', () => ds.sizePreset('default'));
   appEl.classList.add('on-home');
   renderSettings();
   updateBar();
+  applyStretchLayout();
   updateResized();
   renderUpdate(state.update);
   updateNav();

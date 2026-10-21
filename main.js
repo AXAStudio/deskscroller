@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { drawIcon } = require('./icon');
+const { displayModes } = require('./displays');
 
 const PARTITION = 'persist:deskscroller';
 const SETTINGS_FILE = () => path.join(app.getPath('userData'), 'settings.json');
@@ -55,6 +56,7 @@ const DEFAULTS = {
   pauseOnHide: true,
   fill: true,
   remoteDesktop: false,
+  antiStretch: false,
   lastSite: null,
   hotkeys: { ...DEFAULT_HOTKEYS },
 };
@@ -159,6 +161,7 @@ function init() {
   initUpdates();
 
   timers.push(setInterval(trackHover, 120));
+  for (const ev of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(ev, onDisplaysChanged);
   if (!app.isPackaged) watchOwnFiles();
   // Some games re-assert topmost when they regain focus; keep reclaiming it.
   timers.push(setInterval(() => {
@@ -190,24 +193,30 @@ function watchOwnFiles() {
   fs.watch(path.join(__dirname, 'renderer'), { recursive: true }, () => changed(false));
 }
 
+// Window bounds below are in "native" coordinates: where things are with every
+// monitor at its normal resolution. They only differ from the window's actual
+// bounds while anti-stretch is compensating (see toLogical / toNative).
 function defaultBounds(width = 400, height = 720) {
-  const wa = screen.getPrimaryDisplay().workArea;
+  const primary = screen.getPrimaryDisplay();
+  const wa = stretch && stretch.id === primary.id ? stretch.nat.workArea : primary.workArea;
   height = Math.min(height, wa.height - 48);
   return { width, height, x: wa.x + wa.width - width - 24, y: wa.y + wa.height - height - 24 };
 }
 
-function isOnScreen(b) {
+function isOnScreen(nb) {
+  const b = toLogical(nb);
   return screen.getAllDisplays().some(({ workArea: wa }) =>
     b.x + 80 > wa.x && b.x < wa.x + wa.width - 80 && b.y + 40 > wa.y && b.y < wa.y + wa.height - 40);
 }
 
 function createWindow() {
-  const bounds = settings.bounds && isOnScreen(settings.bounds) ? settings.bounds : defaultBounds();
+  stretch = computeStretch();
+  const bounds = toLogical(settings.bounds && isOnScreen(settings.bounds) ? settings.bounds : defaultBounds());
 
   win = new BrowserWindow({
     ...bounds,
-    minWidth: 280,
-    minHeight: 420,
+    minWidth: MIN_W,
+    minHeight: MIN_H,
     frame: false,
     alwaysOnTop: true,
     maximizable: false,
@@ -227,6 +236,7 @@ function createWindow() {
 
   win.setAlwaysOnTop(true, 'screen-saver');
   applyOpacity();
+  applyMinSize();
   if (settings.ghost) win.setFocusable(false);
 
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
@@ -242,10 +252,10 @@ function createWindow() {
   });
 
   const persistBounds = () => {
-    if (!win.isMinimized()) {
-      settings.bounds = win.getBounds();
-      saveSettings();
-    }
+    // Right after a resolution change these are Windows shuffling the window, not you.
+    if (win.isMinimized() || Date.now() < boundsHeldUntil) return;
+    settings.bounds = toNative(win.getBounds());
+    saveSettings();
   };
   win.on('moved', persistBounds);
   win.on('resized', persistBounds);
@@ -364,10 +374,161 @@ function publicState() {
     logins: Object.fromEntries(Object.entries(ACCOUNTS).map(([site, acc]) => [site, acc.login])),
     browser: findBrowser()?.name || null,
     defaultSize: (({ width, height }) => ({ width, height }))(defaultBounds()),
+    stretch: stretchInfo(),
+    // Whether Windows told us the monitors' resolutions (anti-stretch needs them).
+    modesReadable: settings.antiStretch ? displayModes().length > 0 : null,
     version: app.getVersion(),
     justUpdated,
     update: updateState,
   };
+}
+
+// ---------- Anti-stretch ----------
+// A game in a stretched resolution (e.g. 1440x1080 on a 1920x1080 monitor) switches
+// Windows to that mode and the monitor stretches it to fill the panel, overlay
+// included. Anti-stretch keeps the overlay's physical size, shape and place: its
+// bounds are kept in native coordinates and mapped into the current mode, and the
+// page lays out at its native size and is squeezed to fit, so the monitor's
+// stretch puts it back to normal.
+
+const MIN_W = 280, MIN_H = 420;
+let stretch = null;        // { id, nat, cur, fx, fy, saved, current } while compensating
+let boundsHeldUntil = 0;
+
+const phys = (d) => ({ width: Math.round(d.bounds.width * d.scaleFactor), height: Math.round(d.bounds.height * d.scaleFactor) });
+const near = (a, b) => Math.abs(a - b) <= 4;
+
+// Windows' saved mode for an Electron display, matched by its current physical size
+// (and, between same-size monitors, the closest position).
+function savedModeFor(d, modes) {
+  const p = phys(d);
+  const dist = (m) => Math.min(
+    Math.hypot(m.current.x - d.nativeOrigin.x, m.current.y - d.nativeOrigin.y),
+    Math.hypot(m.current.x - d.bounds.x * d.scaleFactor, m.current.y - d.bounds.y * d.scaleFactor));
+  const match = modes
+    .filter((m) => near(m.current.width, p.width) && near(m.current.height, p.height))
+    .sort((a, b) => dist(a) - dist(b))[0];
+  return match ? match.saved : null;
+}
+
+function computeStretch() {
+  if (!settings.antiStretch) return null;
+  const modes = process.env.DESKSCROLLER_FAKE_SAVED_MODE ? fakeModes() : displayModes();
+  if (!modes.length) return null;
+  // Remember each monitor as it looks at its normal resolution: exact bounds and
+  // taskbar, for mapping back later.
+  const snaps = settings.nativeDisplays || {};
+  for (const d of screen.getAllDisplays()) {
+    const saved = savedModeFor(d, modes), p = phys(d);
+    if (saved && near(saved.width, p.width) && near(saved.height, p.height)) {
+      snaps[d.id] = { bounds: d.bounds, workArea: d.workArea, scaleFactor: d.scaleFactor };
+    }
+  }
+  settings.nativeDisplays = snaps;
+
+  // The monitor the overlay lives on.
+  const nb = settings.bounds || defaultBounds();
+  const center = { x: nb.x + nb.width / 2, y: nb.y + nb.height / 2 };
+  const cur = screen.getAllDisplays().find((d) => {
+    const r = (snaps[d.id] || d).bounds;
+    return center.x >= r.x && center.x < r.x + r.width && center.y >= r.y && center.y < r.y + r.height;
+  }) || screen.getDisplayNearestPoint({ x: Math.round(center.x), y: Math.round(center.y) });
+
+  const saved = savedModeFor(cur, modes), p = phys(cur);
+  if (!saved || (near(saved.width, p.width) && near(saved.height, p.height))) return null;
+
+  // Never seen at its normal resolution: assume the same scaling and taskbar.
+  let nat = snaps[cur.id];
+  if (!nat || process.env.DESKSCROLLER_FAKE_SAVED_MODE) {
+    const sf = cur.scaleFactor;
+    const fx = saved.width / sf / cur.bounds.width, fy = saved.height / sf / cur.bounds.height;
+    const b = cur.bounds, wa = cur.workArea;
+    nat = {
+      bounds: { x: b.x, y: b.y, width: Math.round(b.width * fx), height: Math.round(b.height * fy) },
+      workArea: { x: Math.round(b.x + (wa.x - b.x) * fx), y: Math.round(b.y + (wa.y - b.y) * fy), width: Math.round(wa.width * fx), height: Math.round(wa.height * fy) },
+      scaleFactor: sf,
+    };
+  }
+  return {
+    id: cur.id,
+    nat,
+    cur: { bounds: cur.bounds },
+    fx: nat.bounds.width / cur.bounds.width,
+    fy: nat.bounds.height / cur.bounds.height,
+    saved,
+    current: p,
+  };
+}
+
+// Testing without a game: DESKSCROLLER_FAKE_SAVED_MODE=WxH pretends the primary
+// monitor's normal resolution is WxH, so its real mode looks like a stretched one.
+function fakeModes() {
+  const [width, height] = process.env.DESKSCROLLER_FAKE_SAVED_MODE.split('x').map(Number);
+  const d = screen.getPrimaryDisplay();
+  const p = phys(d);
+  return [{ device: 'fake', current: { x: d.nativeOrigin.x, y: d.nativeOrigin.y, ...p }, saved: { width, height } }];
+}
+
+// Native -> actual window bounds, and back. Identity unless compensating.
+function toLogical(r) {
+  if (!stretch) return r;
+  const { nat, cur, fx, fy } = stretch;
+  return {
+    x: Math.round(cur.bounds.x + (r.x - nat.bounds.x) / fx),
+    y: Math.round(cur.bounds.y + (r.y - nat.bounds.y) / fy),
+    width: Math.round(r.width / fx),
+    height: Math.round(r.height / fy),
+  };
+}
+
+function toNative(r) {
+  if (!stretch) return r;
+  const { nat, cur, fx, fy } = stretch;
+  return {
+    x: Math.round(nat.bounds.x + (r.x - cur.bounds.x) * fx),
+    y: Math.round(nat.bounds.y + (r.y - cur.bounds.y) * fy),
+    width: Math.round(r.width * fx),
+    height: Math.round(r.height * fy),
+  };
+}
+
+function setNativeBounds(nb) {
+  settings.bounds = nb;
+  saveSettings();
+  win.setBounds(toLogical(nb));
+}
+
+function applyMinSize() {
+  const fx = stretch ? stretch.fx : 1, fy = stretch ? stretch.fy : 1;
+  win.setMinimumSize(Math.round(MIN_W / fx), Math.round(MIN_H / fy));
+}
+
+function stretchInfo() {
+  if (!stretch) return null;
+  return { fx: stretch.fx, fy: stretch.fy, saved: stretch.saved, current: stretch.current };
+}
+
+function applyStretch() {
+  if (!win) return;
+  const before = JSON.stringify(stretchInfo());
+  stretch = computeStretch();
+  saveSettings();
+  const changed = JSON.stringify(stretchInfo()) !== before;
+  if (!changed && !stretch) return;
+  boundsHeldUntil = Date.now() + 2000;
+  applyMinSize();
+  const nb = settings.bounds && isOnScreen(settings.bounds) ? settings.bounds : defaultBounds();
+  win.setBounds(toLogical(nb));
+  if (changed) send('state:stretch', stretchInfo());
+}
+
+// Windows moves windows around for a moment after a resolution change, so
+// settle the overlay a few times.
+let displayTimers = [];
+function onDisplaysChanged() {
+  boundsHeldUntil = Date.now() + 2000;
+  displayTimers.forEach(clearTimeout);
+  displayTimers = [0, 400, 1200].map((ms) => setTimeout(applyStretch, ms));
 }
 
 // ---------- Updates ----------
@@ -694,6 +855,10 @@ ipcMain.handle('settings:set', (_e, patch) => {
   if (typeof patch.autoHideToolbar === 'boolean') settings.autoHideToolbar = patch.autoHideToolbar;
   if (typeof patch.pauseOnHide === 'boolean') settings.pauseOnHide = patch.pauseOnHide;
   if (typeof patch.fill === 'boolean') settings.fill = patch.fill;
+  if (typeof patch.antiStretch === 'boolean' && patch.antiStretch !== settings.antiStretch) {
+    settings.antiStretch = patch.antiStretch;
+    applyStretch();
+  }
   if ('lastSite' in patch) settings.lastSite = patch.lastSite;
   saveSettings();
   return publicState();
@@ -736,18 +901,19 @@ ipcMain.on('hotkeys:suspend', (_e, on) => {
 });
 
 ipcMain.on('window:click-through', () => setClickThrough(!clickThrough));
-ipcMain.on('window:reset-bounds', () => win.setBounds(defaultBounds()));
+ipcMain.on('window:reset-bounds', () => setNativeBounds(defaultBounds()));
 ipcMain.on('window:size', (_e, preset) => {
   const def = defaultBounds();
   const sizes = { s: [300, 534], m: [380, 676], l: [460, 818], default: [def.width, def.height] };
   const [w, h] = sizes[preset] || sizes.m;
-  const b = win.getBounds();
-  const wa = screen.getDisplayMatching(b).workArea;
+  const b = toNative(win.getBounds());
+  const d = screen.getDisplayMatching(win.getBounds());
+  const wa = stretch && stretch.id === d.id ? stretch.nat.workArea : d.workArea;
   const width = Math.min(w, wa.width), height = Math.min(h, wa.height);
   // Keep the bottom-right corner anchored, since that's where the overlay usually lives.
   const x = Math.max(wa.x, Math.min(b.x + b.width - width, wa.x + wa.width - width));
   const y = Math.max(wa.y, Math.min(b.y + b.height - height, wa.y + wa.height - height));
-  win.setBounds({ x, y, width, height }, true);
+  setNativeBounds({ x, y, width, height });
 });
 ipcMain.on('app:quit', () => quit());
 ipcMain.handle('update:check', () => {
@@ -815,7 +981,7 @@ function refreshTray() {
     { label: win.isVisible() ? 'Hide overlay' : 'Show overlay', accelerator: prettyAccel(settings.hotkeys.toggle) || undefined, click: toggleOverlay },
     { label: 'Click-through', type: 'checkbox', checked: clickThrough, click: () => setClickThrough(!clickThrough) },
     { label: 'Remote desktop mode (restarts)', type: 'checkbox', checked: settings.remoteDesktop, click: () => setRemoteDesktop(!settings.remoteDesktop) },
-    { label: 'Reset position', click: () => { showOverlay(); win.setBounds(defaultBounds()); } },
+    { label: 'Reset position', click: () => { showOverlay(); setNativeBounds(defaultBounds()); } },
     { type: 'separator' },
     { label: 'Quit DeskScroller', click: quit },
   ]));

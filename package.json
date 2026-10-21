@@ -21,8 +21,12 @@
       "main.js",
       "preload.js",
       "icon.js",
+      "displays.js",
       "renderer/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/koffi/build/koffi/!(win32_x64)/**",
+      "!node_modules/koffi/{src,vendor,doc}/**",
+      "!node_modules/koffi/build/koffi/win32_x64/*.{exp,lib}"
     ],
     "directories": {
       "output": "dist"
@@ -54,6 +58,7 @@
     "electron-builder": "^26.15.3"
   },
   "dependencies": {
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "koffi": "^2.16.3"
   }
 }

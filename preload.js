@@ -1,6 +1,6 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-const EVENTS = ['overlay:visibility', 'overlay:hover', 'overlay:blur', 'browser:open', 'update:status', 'hotkey', 'state:click-through', 'state:failed-hotkeys', 'accounts:status', 'accounts:browser-login'];
+const EVENTS = ['overlay:visibility', 'overlay:hover', 'overlay:blur', 'browser:open', 'update:status', 'state:stretch', 'hotkey', 'state:click-through', 'state:failed-hotkeys', 'accounts:status', 'accounts:browser-login'];
 
 contextBridge.exposeInMainWorld('ds', {
   getState: () => ipcRenderer.invoke('state:get'),
