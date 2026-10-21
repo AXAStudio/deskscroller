@@ -44,6 +44,8 @@
       <symbol id="i-close" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" /></symbol>
       <symbol id="i-fill" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" /></symbol>
       <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.8" fill="none" stroke="currentColor" stroke-width="2" /><path d="M4.5 20a7.5 7.5 0 0 1 15 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></symbol>
+      <symbol id="i-vol" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor" /><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></symbol>
+      <symbol id="i-vol-low" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor" /><path d="M15.5 9a4 4 0 0 1 0 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></symbol>
       <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor" /><path d="M16 9.5l5 5M21 9.5l-5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></symbol>
     </defs>
   </svg>
@@ -59,7 +61,10 @@
         <button class="tab" data-site="web" title="Browser"><svg><use href="#i-web" /></svg><span>Web</span></button>
       </nav>
       <div class="actions">
-        <span class="mute-badge" id="mute-badge" title="Muted"><svg><use href="#i-mute" /></svg></span>
+        <div class="vol" id="vol">
+          <div class="vol-pop"><input type="range" id="volume" min="0" max="100" step="1" aria-label="Volume" /></div>
+          <button class="icon-btn" id="btn-volume" title="Volume · click to mute"><svg><use id="vol-icon" href="#i-vol" /></svg></button>
+        </div>
         <button class="icon-btn" id="btn-back" title="Back"><svg><use href="#i-back" /></svg></button>
         <button class="icon-btn" id="btn-reload" title="Reload"><svg><use href="#i-reload" /></svg></button>
         <button class="icon-btn" id="btn-fill" title="Fill mode: video fills the overlay (click for the site's own layout)"><svg><use href="#i-fill" /></svg></button>

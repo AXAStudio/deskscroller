@@ -124,6 +124,7 @@ function ensureView(site, url = PAGES[site].url) {
       l.timer = setTimeout(() => site === current && reveal(site), revealTimeout(site));
     }
     run(site, PAGE_SCRIPTS.focusWatch);
+    run(site, PAGE_SCRIPTS.volume(gain()));
     if (site !== WEB) {
       run(site, PAGE_SCRIPTS.fill(state.settings.fill));
       run(site, PAGE_SCRIPTS.skipAds(state.settings.skipAds));
@@ -558,6 +559,33 @@ function setMuted(on) {
   muted = on;
   applyAudio();
   appEl.classList.toggle('muted', on);
+  renderVolume();
+}
+
+// ---------- Volume ----------
+// The slider is 0-100; loudness follows its square, which feels even across the range.
+
+const gain = () => (state.settings.volume / 100) ** 2;
+
+function renderVolume() {
+  const pct = state.settings.volume;
+  const range = $('#volume');
+  range.value = pct;
+  range.style.setProperty('--fill', pct + '%');
+  $('#vol-icon').setAttribute('href', muted || pct === 0 ? '#i-mute' : pct < 50 ? '#i-vol-low' : '#i-vol');
+  $('#btn-volume').title = muted ? 'Muted · click to unmute' : `Volume ${pct}% · click to mute`;
+}
+
+let volumeSave = null;
+function setVolume(pct) {
+  pct = Math.min(100, Math.max(0, Math.round(pct)));
+  state.settings.volume = pct;
+  if (muted && pct > 0) setMuted(false);
+  for (const site of Object.keys(views)) run(site, PAGE_SCRIPTS.volume(gain()));
+  renderVolume();
+  // Dragging fires this a lot; save once it settles.
+  clearTimeout(volumeSave);
+  volumeSave = setTimeout(async () => { state = await ds.set({ volume: pct }); }, 250);
 }
 
 // ---------- Toolbar ----------
@@ -901,6 +929,18 @@ $('#btn-reload').addEventListener('click', () => {
   }
 });
 $('#btn-fill').addEventListener('click', () => setFill(!state.settings.fill));
+$('#btn-volume').addEventListener('click', () => {
+  setMuted(!muted);
+  toast(muted ? '🔇 Muted' : '🔊 Sound on', 900);
+});
+$('#volume').addEventListener('input', (e) => setVolume(Number(e.target.value)));
+// Keeps the slider open while you drag, even if the pointer strays off it.
+$('#volume').addEventListener('pointerdown', () => $('#vol').classList.add('dragging'));
+window.addEventListener('pointerup', () => $('#vol').classList.remove('dragging'));
+$('#vol').addEventListener('wheel', (e) => {
+  e.preventDefault();
+  setVolume(state.settings.volume + (e.deltaY < 0 ? 5 : -5));
+}, { passive: false });
 $('#btn-web-back').addEventListener('click', () => views[WEB]?.goBack());
 $('#btn-web-forward').addEventListener('click', () => views[WEB]?.goForward());
 $('#btn-web-reload').addEventListener('click', () => views[WEB]?.reload());
@@ -1145,6 +1185,7 @@ $('#btn-size-reset').addEventListener('click', () => ds.sizePreset('default'));
   updateBar();
   applyStretchLayout();
   updateResized();
+  renderVolume();
   renderUpdate(state.update);
   updateNav();
   $('#btn-fill').classList.toggle('on', state.settings.fill);

@@ -133,6 +133,21 @@
     // hands its source over once at startup via useFillSource().
     fill: (on) => `(${fillSource})(${on ? 'true' : 'false'})`,
     useFillSource: (src) => { fillSource = src; },
+    // Holds every video and audio on the page at our volume (0..1). Sites set their
+    // own volume on each new video, so it's re-applied whenever one loads or changes.
+    volume: (v) => `(() => {
+      window.__dsVolume = ${v};
+      if (!window.__dsVolumeInstalled) {
+        window.__dsVolumeInstalled = true;
+        // Media events don't bubble, but a capturing listener on document sees them.
+        const apply = (e) => {
+          const m = e.target;
+          if (m instanceof HTMLMediaElement && Math.abs(m.volume - window.__dsVolume) > 0.001) m.volume = window.__dsVolume;
+        };
+        for (const t of ['loadeddata', 'play', 'volumechange']) document.addEventListener(t, apply, true);
+      }
+      for (const m of document.querySelectorAll('video, audio')) m.volume = ${v};
+    })()`,
     skipAds: (on) => `window.__dsFill && (window.__dsFill.skipAds = ${on ? 'true' : 'false'})`,
 
     slide: (dir) => `(() => {

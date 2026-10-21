@@ -215,6 +215,21 @@
     .pager button:hover { background: rgba(255,255,255,.14); }
     .pager span { min-width: 38px; text-align: center; font-variant-numeric: tabular-nums; }
 
+    .heart {
+      position: absolute; width: 104px; height: 104px; margin: -52px 0 0 -52px; pointer-events: none;
+      color: #fe2c55; filter: drop-shadow(0 6px 16px rgba(254, 44, 85, .45));
+      animation: heart .95s cubic-bezier(.2,.8,.2,1) forwards;
+    }
+    .heart svg { width: 100%; height: 100%; }
+    .heart path { fill: currentColor; }
+    @keyframes heart {
+      0%   { transform: rotate(var(--r)) scale(0);    opacity: 0; }
+      14%  { transform: rotate(var(--r)) scale(1.25); opacity: 1; }
+      26%  { transform: rotate(var(--r)) scale(.92); }
+      38%  { transform: rotate(var(--r)) scale(1);    opacity: 1; }
+      100% { transform: translateY(-130px) rotate(var(--r)) scale(1.6); opacity: 0; }
+    }
+
     .toast {
       position: absolute; left: 50%; top: 14px; transform: translate(-50%, -8px); opacity: 0;
       padding: 8px 14px; border-radius: 999px; background: rgba(16,16,24,.92); color: #fff;
@@ -543,7 +558,32 @@
     forcePause(v);
     return 'pause';
   };
-  canvas.addEventListener('click', () => ds.toggle());
+  // ---------- double-click to like ----------
+  // A double-click likes the video (never un-likes it) and pops a heart where you
+  // clicked, like TikTok. So a single click waits a moment before pausing, to be
+  // sure it isn't the first half of a double-click.
+
+  const heartAt = (x, y) => {
+    const el = h('div', { class: 'heart' }, icon({ d: HEART }));
+    el.style.left = x + 'px';
+    el.style.top = y + 'px';
+    el.style.setProperty('--r', (Math.random() * 40 - 20).toFixed(1) + 'deg');
+    el.addEventListener('animationend', () => el.remove());
+    root.appendChild(el);
+  };
+
+  let clickTimer = null;
+  canvas.addEventListener('click', (e) => {
+    if (e.detail > 1) {
+      clearTimeout(clickTimer);
+      clickTimer = null;
+      heartAt(e.clientX, e.clientY);
+      likeOnce();
+      return;
+    }
+    clearTimeout(clickTimer);
+    clickTimer = setTimeout(() => { clickTimer = null; ds.toggle(); }, 230);
+  });
 
   // ---------- like / comment / share: finding the site's real buttons ----------
 
@@ -648,6 +688,12 @@
     setTimeout(refreshActions, 600);
     // Not logged in? The site answers with a login prompt; step aside to show it.
     setTimeout(() => { if (promptCount() > before) ds.peek = true; }, 900);
+  };
+
+  const likeOnce = () => {
+    const btn = findAction('like');
+    const st = btn ? likedState(btn) : null;
+    if (!(st === null ? liked[identity] : st)) like();
   };
 
   const share = () => {

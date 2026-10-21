@@ -58,7 +58,7 @@ svg { width: 18px; height: 18px; display: block; flex: none; }
 }
 #app.bar-hidden #toolbar { transform: translateY(-100%); opacity: 0; pointer-events: none; }
 
-#toolbar button, #toolbar .tabs { -webkit-app-region: no-drag; }
+#toolbar button, #toolbar .tabs, #toolbar .vol { -webkit-app-region: no-drag; }
 
 .icon-btn {
   width: 32px;
@@ -79,12 +79,14 @@ svg { width: 18px; height: 18px; display: block; flex: none; }
 #btn-size-reset { display: none; }
 #app.resized #btn-size-reset { display: grid; }
 /* Make room for it at narrow widths: the active tab drops its label. */
+/* Up to the default 400px (plus room for the default-size button), the active
+   tab shows just its icon: the pill and the colored icons already say which it is. */
 @container (max-width: 440px) {
-  #app.resized .tab.active span { max-width: 0; opacity: 0; }
-  #app.resized .tab.active { gap: 0; }
+  #app .tab.active span { max-width: 0; opacity: 0; }
+  #app .tab.active { gap: 0; }
 }
-/* Small presets: drop the feed's back / reload and tighten up so quit stays reachable. */
-@container (max-width: 340px) {
+/* Below the default width: drop the feed's back / reload and tighten up so quit stays reachable. */
+@container (max-width: 395px) {
   #btn-back, #btn-reload { display: none; }
   .tab { min-width: 24px; padding: 0 3px; }
   #toolbar .icon-btn { width: 28px; }
@@ -146,17 +148,50 @@ svg { width: 18px; height: 18px; display: block; flex: none; }
 
 .actions { margin-left: auto; display: flex; align-items: center; gap: 1px; }
 
-.mute-badge {
-  display: none;
-  width: 22px; height: 22px;
-  margin-right: 4px;
-  border-radius: 7px;
-  place-items: center;
-  color: #ffb4c4;
-  background: rgba(255, 61, 110, .16);
+/* Volume: a speaker button with a vertical slider that drops down below it while
+   you hover it (or drag / use the keyboard), so it takes no toolbar room otherwise.
+   The panel starts right at the button so the pointer can move down into it. */
+.vol { position: relative; display: flex; align-items: center; }
+.vol-pop {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  width: 40px;
+  height: 0;
+  padding-top: 6px;
+  display: flex;
+  justify-content: center;
+  overflow: hidden;
+  transform: translateX(-50%);
+  opacity: 0;
+  transition: height .26s var(--ease), opacity .2s;
 }
-.mute-badge svg { width: 14px; height: 14px; }
-#app.muted .mute-badge { display: grid; }
+.vol-pop::before {
+  content: "";
+  position: absolute;
+  inset: 6px 0 0;
+  border-radius: 12px;
+  background: rgba(22, 22, 30, .97);
+  border: 1px solid var(--border);
+  box-shadow: 0 12px 28px -10px rgba(0, 0, 0, .7);
+}
+.vol:hover .vol-pop, .vol:focus-within .vol-pop, .vol.dragging .vol-pop {
+  height: 138px;
+  opacity: 1;
+}
+/* Vertical slider: louder at the top. */
+.vol-pop input[type="range"] {
+  position: relative;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 4px;
+  height: 104px;
+  margin-top: 15px;
+  flex: none;
+  background: linear-gradient(0deg, var(--accent) var(--fill, 100%), rgba(255, 255, 255, .14) var(--fill, 100%));
+}
+.vol-pop input[type="range"]::-webkit-slider-thumb { width: 13px; height: 13px; }
+#app.muted #btn-volume { color: #ff8aa6; }
 
 @container (max-width: 350px) {
   .tab.active span { max-width: 0; opacity: 0; }

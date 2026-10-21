@@ -59,6 +59,7 @@ const DEFAULTS = {
   antiStretch: false,
   skipAds: true,
   keepFeedsLoaded: false,
+  volume: 100,
   lastSite: null,
   hotkeys: { ...DEFAULT_HOTKEYS },
 };
@@ -877,6 +878,7 @@ ipcMain.handle('settings:set', (_e, patch) => {
   if (typeof patch.fill === 'boolean') settings.fill = patch.fill;
   if (typeof patch.skipAds === 'boolean') settings.skipAds = patch.skipAds;
   if (typeof patch.keepFeedsLoaded === 'boolean') settings.keepFeedsLoaded = patch.keepFeedsLoaded;
+  if (typeof patch.volume === 'number') settings.volume = Math.min(100, Math.max(0, Math.round(patch.volume)));
   if (typeof patch.antiStretch === 'boolean' && patch.antiStretch !== settings.antiStretch) {
     settings.antiStretch = patch.antiStretch;
     applyStretch();
