@@ -365,6 +365,13 @@ function toUrl(text) {
   return 'https://www.google.com/search?q=' + encodeURIComponent(t);
 }
 
+// A page in fullscreen (a video in the browser tab) puts its webview in the top
+// layer, above everything. Leaving it there after switching away would leave an
+// invisible layer over the whole overlay that swallows every click.
+function exitFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+}
+
 // `url` navigates the site's view somewhere specific (e.g. its login page).
 async function openSite(site, url = null) {
   if (!PAGES[site]) return;
@@ -372,6 +379,7 @@ async function openSite(site, url = null) {
     if (url) loadUrl(site, url);
     return;
   }
+  exitFullscreen();
   if (loginSite && loginSite !== site) cancelLogin();
 
   const isNew = !views[site];
@@ -405,6 +413,7 @@ async function openSite(site, url = null) {
 }
 
 async function goHome() {
+  exitFullscreen();
   if (loginSite) cancelLogin();
   current = null;
   syncPlayback();
@@ -502,6 +511,7 @@ function updateBar() {
 }
 
 function setPanel(name) {
+  if (name) exitFullscreen();
   if (name !== 'settings' && recording) stopRecording();
   panel = name;
   for (const id of ['settings', 'accounts']) {
