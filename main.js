@@ -384,98 +384,114 @@ function publicState() {
 }
 
 // ---------- Anti-stretch ----------
-// A game in a stretched resolution (e.g. 1440x1080 on a 1920x1080 monitor) switches
-// Windows to that mode and the monitor stretches it to fill the panel, overlay
-// included. Anti-stretch keeps the overlay's physical size, shape and place: its
-// bounds are kept in native coordinates and mapped into the current mode, and the
-// page lays out at its native size and is squeezed to fit, so the monitor's
-// stretch puts it back to normal.
+// In a stretched resolution (e.g. 1920x1440 on a 2560x1440 monitor, whether a game
+// switched to it or it's the desktop resolution) the GPU or monitor stretches the
+// picture to fill the panel, overlay included. Anti-stretch keeps the overlay's
+// physical size, shape and place: its bounds are kept in native coordinates and
+// mapped into the current mode, and the page lays out at its native size and is
+// squeezed to fit, so the stretch puts it back to normal.
 
 const MIN_W = 280, MIN_H = 420;
-let stretch = null;        // { id, nat, cur, fx, fy, saved, current } while compensating
+let stretch = null;        // { id, nat, cur, fx, fy, offX, offY, native, current } while compensating
 let boundsHeldUntil = 0;
+
+// How Windows says the picture is fitted to the panel (DISPLAYCONFIG_SCALING).
+// Driver-level scaling (the usual way to stretch) reports identity, so anything
+// that isn't centered or aspect-fit counts as stretched.
+const SCALING_CENTERED = 2, SCALING_ASPECT = 4;
 
 const phys = (d) => ({ width: Math.round(d.bounds.width * d.scaleFactor), height: Math.round(d.bounds.height * d.scaleFactor) });
 const near = (a, b) => Math.abs(a - b) <= 4;
+const same = (a, b) => near(a.width, b.width) && near(a.height, b.height);
 
-// Windows' saved mode for an Electron display, matched by its current physical size
+// Windows' modes for an Electron display, matched by its current physical size
 // (and, between same-size monitors, the closest position).
-function savedModeFor(d, modes) {
+function modeFor(d, modes) {
   const p = phys(d);
   const dist = (m) => Math.min(
     Math.hypot(m.current.x - d.nativeOrigin.x, m.current.y - d.nativeOrigin.y),
     Math.hypot(m.current.x - d.bounds.x * d.scaleFactor, m.current.y - d.bounds.y * d.scaleFactor));
-  const match = modes
-    .filter((m) => near(m.current.width, p.width) && near(m.current.height, p.height))
-    .sort((a, b) => dist(a) - dist(b))[0];
-  return match ? match.saved : null;
+  return modes.filter((m) => same(m.current, p)).sort((a, b) => dist(a) - dist(b))[0] || null;
 }
 
 function computeStretch() {
   if (!settings.antiStretch) return null;
-  const modes = process.env.DESKSCROLLER_FAKE_SAVED_MODE ? fakeModes() : displayModes();
+  const modes = process.env.DESKSCROLLER_FAKE_NATIVE ? fakeModes() : displayModes();
   if (!modes.length) return null;
-  // Remember each monitor as it looks at its normal resolution: exact bounds and
-  // taskbar, for mapping back later.
+  // Remember each monitor as it looks at its native resolution (exact bounds and
+  // taskbar) for mapping back later. A remembered layout from another resolution
+  // is no use, so it only counts if its size matches the native one.
   const snaps = settings.nativeDisplays || {};
   for (const d of screen.getAllDisplays()) {
-    const saved = savedModeFor(d, modes), p = phys(d);
-    if (saved && near(saved.width, p.width) && near(saved.height, p.height)) {
-      snaps[d.id] = { bounds: d.bounds, workArea: d.workArea, scaleFactor: d.scaleFactor };
-    }
+    const m = modeFor(d, modes);
+    if (m && same(m.native, phys(d))) snaps[d.id] = { bounds: d.bounds, workArea: d.workArea, scaleFactor: d.scaleFactor };
   }
   settings.nativeDisplays = snaps;
+  const snapFor = (d, native) => {
+    const s = snaps[d.id];
+    return s && same(native, phys(s)) && !process.env.DESKSCROLLER_FAKE_NATIVE ? s : null;
+  };
 
   // The monitor the overlay lives on.
   const nb = settings.bounds || defaultBounds();
   const center = { x: nb.x + nb.width / 2, y: nb.y + nb.height / 2 };
   const cur = screen.getAllDisplays().find((d) => {
-    const r = (snaps[d.id] || d).bounds;
+    const m = modeFor(d, modes);
+    const r = ((m && snapFor(d, m.native)) || d).bounds;
     return center.x >= r.x && center.x < r.x + r.width && center.y >= r.y && center.y < r.y + r.height;
   }) || screen.getDisplayNearestPoint({ x: Math.round(center.x), y: Math.round(center.y) });
 
-  const saved = savedModeFor(cur, modes), p = phys(cur);
-  if (!saved || (near(saved.width, p.width) && near(saved.height, p.height))) return null;
+  const m = modeFor(cur, modes), p = phys(cur);
+  if (!m || same(m.native, p) || m.native.scaling === SCALING_CENTERED) return null;
 
-  // Never seen at its normal resolution: assume the same scaling and taskbar.
-  let nat = snaps[cur.id];
-  if (!nat || process.env.DESKSCROLLER_FAKE_SAVED_MODE) {
+  // Never seen at its native resolution: assume the same scaling and taskbar.
+  let nat = snapFor(cur, m.native);
+  if (!nat) {
     const sf = cur.scaleFactor;
-    const fx = saved.width / sf / cur.bounds.width, fy = saved.height / sf / cur.bounds.height;
+    const kx = m.native.width / sf / cur.bounds.width, ky = m.native.height / sf / cur.bounds.height;
     const b = cur.bounds, wa = cur.workArea;
     nat = {
-      bounds: { x: b.x, y: b.y, width: Math.round(b.width * fx), height: Math.round(b.height * fy) },
-      workArea: { x: Math.round(b.x + (wa.x - b.x) * fx), y: Math.round(b.y + (wa.y - b.y) * fy), width: Math.round(wa.width * fx), height: Math.round(wa.height * fy) },
+      bounds: { x: b.x, y: b.y, width: Math.round(b.width * kx), height: Math.round(b.height * ky) },
+      workArea: { x: Math.round(b.x + (wa.x - b.x) * kx), y: Math.round(b.y + (wa.y - b.y) * ky), width: Math.round(wa.width * kx), height: Math.round(wa.height * ky) },
       scaleFactor: sf,
     };
+  }
+  let fx = nat.bounds.width / cur.bounds.width, fy = nat.bounds.height / cur.bounds.height;
+  let offX = 0, offY = 0;
+  if (m.native.scaling === SCALING_ASPECT) {
+    // Scaled evenly with black bars: same shape, just bigger and centered.
+    fx = fy = Math.min(fx, fy);
+    offX = (nat.bounds.width - cur.bounds.width * fx) / 2;
+    offY = (nat.bounds.height - cur.bounds.height * fy) / 2;
   }
   return {
     id: cur.id,
     nat,
     cur: { bounds: cur.bounds },
-    fx: nat.bounds.width / cur.bounds.width,
-    fy: nat.bounds.height / cur.bounds.height,
-    saved,
+    fx,
+    fy,
+    offX,
+    offY,
+    native: { width: m.native.width, height: m.native.height },
     current: p,
   };
 }
 
-// Testing without a game: DESKSCROLLER_FAKE_SAVED_MODE=WxH pretends the primary
-// monitor's normal resolution is WxH, so its real mode looks like a stretched one.
+// Testing without a game: DESKSCROLLER_FAKE_NATIVE=WxH pretends the primary
+// monitor's native resolution is WxH, so its real mode looks like a stretched one.
 function fakeModes() {
-  const [width, height] = process.env.DESKSCROLLER_FAKE_SAVED_MODE.split('x').map(Number);
+  const [width, height] = process.env.DESKSCROLLER_FAKE_NATIVE.split('x').map(Number);
   const d = screen.getPrimaryDisplay();
-  const p = phys(d);
-  return [{ device: 'fake', current: { x: d.nativeOrigin.x, y: d.nativeOrigin.y, ...p }, saved: { width, height } }];
+  return [{ device: 'fake', current: { x: d.nativeOrigin.x, y: d.nativeOrigin.y, ...phys(d) }, native: { width, height, scaling: 1 } }];
 }
 
 // Native -> actual window bounds, and back. Identity unless compensating.
 function toLogical(r) {
   if (!stretch) return r;
-  const { nat, cur, fx, fy } = stretch;
+  const { nat, cur, fx, fy, offX, offY } = stretch;
   return {
-    x: Math.round(cur.bounds.x + (r.x - nat.bounds.x) / fx),
-    y: Math.round(cur.bounds.y + (r.y - nat.bounds.y) / fy),
+    x: Math.round(cur.bounds.x + (r.x - nat.bounds.x - offX) / fx),
+    y: Math.round(cur.bounds.y + (r.y - nat.bounds.y - offY) / fy),
     width: Math.round(r.width / fx),
     height: Math.round(r.height / fy),
   };
@@ -483,10 +499,10 @@ function toLogical(r) {
 
 function toNative(r) {
   if (!stretch) return r;
-  const { nat, cur, fx, fy } = stretch;
+  const { nat, cur, fx, fy, offX, offY } = stretch;
   return {
-    x: Math.round(nat.bounds.x + (r.x - cur.bounds.x) * fx),
-    y: Math.round(nat.bounds.y + (r.y - cur.bounds.y) * fy),
+    x: Math.round(nat.bounds.x + offX + (r.x - cur.bounds.x) * fx),
+    y: Math.round(nat.bounds.y + offY + (r.y - cur.bounds.y) * fy),
     width: Math.round(r.width * fx),
     height: Math.round(r.height * fy),
   };
@@ -505,7 +521,7 @@ function applyMinSize() {
 
 function stretchInfo() {
   if (!stretch) return null;
-  return { fx: stretch.fx, fy: stretch.fy, saved: stretch.saved, current: stretch.current };
+  return { fx: stretch.fx, fy: stretch.fy, native: stretch.native, current: stretch.current };
 }
 
 function applyStretch() {

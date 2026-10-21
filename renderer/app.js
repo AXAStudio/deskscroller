@@ -1005,7 +1005,7 @@ function applyStretchLayout() {
   }
   const res = (m) => `${m.width}×${m.height}`;
   $('#stretch-text').textContent = !state.settings.antiStretch ? ''
-    : s ? `Compensating: ${res(s.current)} → ${res(s.saved)}`
+    : s ? `Compensating: ${res(s.current)} on a ${res(s.native)} monitor`
     : state.modesReadable === false ? 'Couldn’t read your monitor’s resolution' : 'Not needed right now (normal resolution)';
 }
 
