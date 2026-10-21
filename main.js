@@ -57,6 +57,8 @@ const DEFAULTS = {
   fill: true,
   remoteDesktop: false,
   antiStretch: false,
+  skipAds: true,
+  keepFeedsLoaded: false,
   lastSite: null,
   hotkeys: { ...DEFAULT_HOTKEYS },
 };
@@ -139,8 +141,10 @@ function init() {
   app.userAgentFallback = ua;
   const ses = session.fromPartition(PARTITION);
   ses.setUserAgent(ua);
+  // No camera or microphone ('media'): nothing here needs them, and granting them
+  // also starts Chromium's capture service for nothing.
   ses.setPermissionRequestHandler((_wc, permission, cb) => {
-    cb(['fullscreen', 'clipboard-sanitized-write', 'media'].includes(permission));
+    cb(['fullscreen', 'clipboard-sanitized-write'].includes(permission));
   });
 
   let cookieTimer = null;
@@ -871,6 +875,8 @@ ipcMain.handle('settings:set', (_e, patch) => {
   if (typeof patch.autoHideToolbar === 'boolean') settings.autoHideToolbar = patch.autoHideToolbar;
   if (typeof patch.pauseOnHide === 'boolean') settings.pauseOnHide = patch.pauseOnHide;
   if (typeof patch.fill === 'boolean') settings.fill = patch.fill;
+  if (typeof patch.skipAds === 'boolean') settings.skipAds = patch.skipAds;
+  if (typeof patch.keepFeedsLoaded === 'boolean') settings.keepFeedsLoaded = patch.keepFeedsLoaded;
   if (typeof patch.antiStretch === 'boolean' && patch.antiStretch !== settings.antiStretch) {
     settings.antiStretch = patch.antiStretch;
     applyStretch();

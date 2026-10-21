@@ -16,6 +16,10 @@
     return best;
   })()`;
 
+  // Same, counting TikTok slideshows (a carousel of pictures, no <video>) as posts too.
+  const MEDIA = `'video, [class*="PhotoPlayerContainer"]'`;
+  const FIND_MEDIA = FIND_VIDEO.replace("querySelectorAll('video')", `querySelectorAll(${MEDIA})`);
+
   root.PAGE_SCRIPTS = {
     // Returns how it navigated, or null so the caller can fall back to a wheel event.
     navigate: (dir) => `(() => {
@@ -25,7 +29,7 @@
 
       // Feeds that keep several <video>s stacked: scroll exactly to the neighbour.
       // Feeds that recycle one player (YouTube) return null and get a real wheel tick.
-      const current = ${FIND_VIDEO};
+      const current = ${FIND_MEDIA};
       if (!current) return null;
       const scrollable = (el) => {
         const s = getComputedStyle(el);
@@ -34,7 +38,7 @@
 
       const { top, height } = current.getBoundingClientRect();
       const gap = height * 0.6;
-      const others = [...document.querySelectorAll('video')]
+      const others = [...document.querySelectorAll(${MEDIA})]
         .map((v) => v.getBoundingClientRect())
         .filter((r) => r.height > 50 && (dir > 0 ? r.top > top + gap : r.top < top - gap))
         .sort((a, b) => dir * (a.top - b.top));
@@ -129,6 +133,7 @@
     // hands its source over once at startup via useFillSource().
     fill: (on) => `(${fillSource})(${on ? 'true' : 'false'})`,
     useFillSource: (src) => { fillSource = src; },
+    skipAds: (on) => `window.__dsFill && (window.__dsFill.skipAds = ${on ? 'true' : 'false'})`,
 
     slide: (dir) => `(() => {
       if (window.__dsFill && window.__dsFill.slide) window.__dsFill.slide(${dir > 0 ? 1 : -1});

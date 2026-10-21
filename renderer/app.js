@@ -124,7 +124,10 @@ function ensureView(site, url = PAGES[site].url) {
       l.timer = setTimeout(() => site === current && reveal(site), revealTimeout(site));
     }
     run(site, PAGE_SCRIPTS.focusWatch);
-    if (site !== WEB) run(site, PAGE_SCRIPTS.fill(state.settings.fill));
+    if (site !== WEB) {
+      run(site, PAGE_SCRIPTS.fill(state.settings.fill));
+      run(site, PAGE_SCRIPTS.skipAds(state.settings.skipAds));
+    }
     // A fresh page has lost any hold we put on it; re-apply what it should be doing.
     delete playing[site];
     syncPlayback();
@@ -372,6 +375,75 @@ function exitFullscreen() {
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
 }
 
+// ---------- Memory ----------
+// Each feed is a whole YouTube / Instagram / TikTok page, 200-450 MB apiece. Only
+// the tab you're on stays loaded; one you leave is unloaded a few minutes later
+// (the browser tab remembers its page), unless "Keep feeds loaded" is on.
+
+const UNLOAD_FEED_AFTER = 3 * 60 * 1000;
+const UNLOAD_WEB_AFTER = 10 * 60 * 1000;
+// Hidden that long (you're playing): free everything for the game. The tab you
+// were on reloads when the overlay comes back.
+const UNLOAD_ALL_HIDDEN_AFTER = 5 * 60 * 1000;
+const unloadTimers = {};
+let hiddenTimer = null;
+let webResumeUrl = null;   // the browser tab's page while it's unloaded
+
+function scheduleUnloads() {
+  for (const site of Object.keys(views)) {
+    clearTimeout(unloadTimers[site]);
+    delete unloadTimers[site];
+    if (site === current || site === loginSite || state.settings.keepFeedsLoaded) continue;
+    unloadTimers[site] = setTimeout(() => unloadView(site), site === WEB ? UNLOAD_WEB_AFTER : UNLOAD_FEED_AFTER);
+  }
+}
+
+function unloadView(site, evenCurrent = false) {
+  clearTimeout(unloadTimers[site]);
+  delete unloadTimers[site];
+  const wv = views[site];
+  if (!wv || (site === current && !evenCurrent)) return;
+  if (site === WEB) {
+    try {
+      const url = wv.getURL();
+      webResumeUrl = url && url !== 'about:blank' ? url : null;
+    } catch { /* never loaded */ }
+  }
+  delete views[site];
+  delete playing[site];
+  ready.delete(site);
+  clearTimeout(loading[site]?.timer);
+  delete loading[site];
+  wv.remove(); // its page and renderer process go with it
+}
+
+function onOverlayVisibility(visible) {
+  clearTimeout(hiddenTimer);
+  if (!visible) {
+    if (state.settings.keepFeedsLoaded) return;
+    hiddenTimer = setTimeout(() => {
+      if (loginSite) return;
+      for (const site of Object.keys(views)) unloadView(site, true);
+    }, UNLOAD_ALL_HIDDEN_AFTER);
+    return;
+  }
+  // Back from a long hide: bring the tab you were on back.
+  if (current && !views[current]) {
+    const url = current === WEB ? webResumeUrl || undefined : undefined;
+    if (current === WEB) webResumeUrl = null;
+    const wv = ensureView(current, url);
+    wv.classList.add('active');
+    setLoading(true);
+    renderCover();
+    syncPlayback();
+    updateNav();
+  }
+}
+
+function preloadFeeds() {
+  for (const site of Object.keys(SITES)) ensureView(site);
+}
+
 // `url` navigates the site's view somewhere specific (e.g. its login page).
 async function openSite(site, url = null) {
   if (!PAGES[site]) return;
@@ -383,6 +455,8 @@ async function openSite(site, url = null) {
   if (loginSite && loginSite !== site) cancelLogin();
 
   const isNew = !views[site];
+  if (isNew && site === WEB && !url && webResumeUrl) url = webResumeUrl;
+  if (site === WEB) webResumeUrl = null;
   const wv = ensureView(site, url || undefined);
   for (const [key, el] of Object.entries(views)) el.classList.toggle('active', key === site);
   current = site;
@@ -408,6 +482,7 @@ async function openSite(site, url = null) {
   syncFocus();
   if (appEl.classList.contains('web-start')) $('#ws-input').focus();
   else wv.focus();
+  scheduleUnloads();
 
   state = await ds.set({ lastSite: site });
 }
@@ -427,6 +502,7 @@ async function goHome() {
   updateBar();
   editing = false;
   syncFocus();
+  scheduleUnloads();
   state = await ds.set({ lastSite: null });
 }
 
@@ -567,6 +643,7 @@ function renderAccounts() {
   for (const card of document.querySelectorAll('.card')) {
     const on = !!accounts[card.dataset.site];
     const chip = card.querySelector('.conn');
+    if (!chip) continue; // the browser card has no account
     chip.classList.toggle('on', on);
     chip.textContent = on ? 'Connected' : 'Not connected';
   }
@@ -670,6 +747,8 @@ function renderSettings() {
   $('#opt-pause').checked = s.pauseOnHide;
   $('#opt-remote').checked = s.remoteDesktop;
   $('#opt-stretch').checked = s.antiStretch;
+  $('#opt-ads').checked = s.skipAds;
+  $('#opt-keep').checked = s.keepFeedsLoaded;
   range.disabled = s.remoteDesktop;
   $('#btn-clickthrough').textContent = state.clickThrough ? 'Disable' : 'Enable';
   renderHotkeys();
@@ -892,6 +971,16 @@ $('#opt-ghost').addEventListener('change', async (e) => {
 $('#opt-pause').addEventListener('change', async (e) => {
   state = await ds.set({ pauseOnHide: e.target.checked });
 });
+$('#opt-keep').addEventListener('change', async (e) => {
+  state = await ds.set({ keepFeedsLoaded: e.target.checked });
+  if (e.target.checked) preloadFeeds();
+  scheduleUnloads();
+});
+$('#opt-ads').addEventListener('change', async (e) => {
+  state = await ds.set({ skipAds: e.target.checked });
+  for (const site of Object.keys(SITES)) run(site, PAGE_SCRIPTS.skipAds(e.target.checked));
+  toast(e.target.checked ? 'Ads get skipped' : 'Ads play like normal');
+});
 $('#opt-stretch').addEventListener('change', async (e) => {
   state = await ds.set({ antiStretch: e.target.checked });
   applyStretchLayout();
@@ -930,6 +1019,7 @@ ds.on('overlay:hover', (inside) => {
 ds.on('overlay:visibility', (visible) => {
   overlayVisible = visible;
   syncPlayback();
+  onOverlayVisibility(visible);
 });
 
 // Clicked back into the game: done typing, so stop holding on to focus.
@@ -1060,8 +1150,8 @@ $('#btn-size-reset').addEventListener('click', () => ds.sizePreset('default'));
   $('#btn-fill').classList.toggle('on', state.settings.fill);
   await refreshAccounts();
   if (state.settings.lastSite) openSite(state.settings.lastSite);
-  // Load every feed up front (held and muted in the background) so switching is instant.
-  for (const site of Object.keys(SITES)) ensureView(site);
+  // Otherwise feeds load when you open them (see Memory above).
+  if (state.settings.keepFeedsLoaded) preloadFeeds();
   setInterval(creepLoading, 400);
   if (state.failedHotkeys.length) {
     const names = state.failedHotkeys.map((a) => state.labels[a]).join(', ');

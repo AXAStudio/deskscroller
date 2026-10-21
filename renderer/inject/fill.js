@@ -200,6 +200,21 @@
     .send:not(:disabled):active { transform: scale(.92); }
     .send svg { width: 17px; height: 17px; }
 
+    .pager {
+      position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
+      display: none; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; pointer-events: auto;
+      background: rgba(10,10,15,.55); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,.14);
+      color: #fff; font: 600 12px system-ui, 'Segoe UI', sans-serif; transition: opacity .25s;
+    }
+    .pager.on { display: flex; }
+    .pager.away { opacity: 0; pointer-events: none; }
+    .pager button {
+      width: 28px; height: 28px; border-radius: 50%; border: 0; cursor: pointer; padding: 0;
+      background: none; color: #fff; display: grid; place-items: center; font: 600 17px/1 system-ui, sans-serif;
+    }
+    .pager button:hover { background: rgba(255,255,255,.14); }
+    .pager span { min-width: 38px; text-align: center; font-variant-numeric: tabular-nums; }
+
     .toast {
       position: absolute; left: 50%; top: 14px; transform: translate(-50%, -8px); opacity: 0;
       padding: 8px 14px; border-radius: 999px; background: rgba(16,16,24,.92); color: #fff;
@@ -271,7 +286,66 @@
     h('div', { class: 'compose' }, input, sendBtn),
   );
 
-  root.append(col, back, sheet, toastEl);
+  // Slideshows: which picture is up, and buttons to flip through them.
+  const pagerText = h('span');
+  const pager = h('div', { class: 'pager' },
+    h('button', { title: 'Previous picture', text: '‹', onclick: () => video && video.isPhoto && video.slide(-1) }),
+    pagerText,
+    h('button', { title: 'Next picture', text: '›', onclick: () => video && video.isPhoto && video.slide(1) }));
+
+  root.append(col, back, sheet, pager, toastEl);
+
+  // ---------- TikTok slideshows ----------
+  // Photo posts are a Swiper carousel of images that advances by itself, with the
+  // music in a separate <audio>; there's no <video>. Each one is wrapped in an
+  // object with the bits of the <video> interface the rest of this file uses
+  // (play / pause / muted / paused / size / currentSrc ...), plus `frame`, the
+  // image to draw, and `slide()` to flip through the pictures.
+
+  const PHOTO = '[class*="PhotoPlayerContainer"]';
+  const photos = new WeakMap();
+  const asPhoto = (el) => {
+    let m = photos.get(el);
+    if (m) return m;
+    const sw = () => el.querySelector('.swiper');
+    const swiper = () => { const s = sw(); return s && s.swiper; };
+    const autoplay = () => { const s = swiper(); return s && s.autoplay; };
+    const img = () => { const s = sw(); return s && (s.querySelector('.swiper-slide-active img') || s.querySelector('img')); };
+    const audio = () => {
+      for (let x = el, i = 0; x && i < 6; x = x.parentElement, i++) { const a = x.querySelector('audio'); if (a) return a; }
+      return null;
+    };
+    m = {
+      isPhoto: true,
+      get frame() { return img(); },
+      get videoWidth() { const i = img(); return i && i.complete ? i.naturalWidth : 0; },
+      get videoHeight() { const i = img(); return i && i.complete ? i.naturalHeight : 0; },
+      get readyState() { return this.videoWidth ? 4 : 0; },
+      get paused() { const a = autoplay(); return a ? !a.running : !!(audio() && audio().paused); },
+      ended: false,
+      get muted() { const a = audio(); return a ? a.muted : !soundOn; },
+      set muted(on) { const a = audio(); if (a) a.muted = on; },
+      // Stands in for the video's source and time: the post, and which picture is up.
+      get currentSrc() { const s = sw(); const i = s && s.querySelector('.swiper-slide:not(.swiper-slide-duplicate) img'); return 'photo:' + (i ? i.src : ''); },
+      get currentTime() { const s = swiper(); return s ? s.realIndex : 0; },
+      get count() { const s = sw(); return s ? s.querySelectorAll('.swiper-slide:not(.swiper-slide-duplicate)').length : 1; },
+      get isConnected() { return el.isConnected; },
+      get parentElement() { return el.parentElement; },
+      getBoundingClientRect: () => el.getBoundingClientRect(),
+      closest: (sel) => el.closest(sel),
+      play() {
+        const a = autoplay(); if (a && !a.running) a.start();
+        const au = audio(); return au ? au.play() : Promise.resolve();
+      },
+      pause() {
+        const a = autoplay(); if (a && a.running) a.stop();
+        const au = audio(); if (au) au.pause();
+      },
+      slide(dir) { const s = swiper(); if (s) (dir > 0 ? s.slideNext() : s.slidePrev()); },
+    };
+    photos.set(el, m);
+    return m;
+  };
 
   // ---------- picking and drawing the video ----------
 
@@ -282,13 +356,19 @@
       const a = visibleArea(v.getBoundingClientRect());
       if (a > area) { area = a; best = v; }
     }
+    for (const el of document.querySelectorAll(PHOTO)) {
+      const m = asPhoto(el);
+      if (!m.videoWidth) continue;
+      const a = visibleArea(el.getBoundingClientRect());
+      if (a > area) { area = a; best = m; }
+    }
     // Only take over when a video really is the main thing on screen
     // (not on login pages, profiles, or a tiny preview).
     return area > innerWidth * innerHeight * 0.12 ? best : null;
   };
 
   let video = null, identity = '', picked = 0, lostAt = 0, drawn = '', shown = false;
-  let pending = null;   // { dir, at, from, fromId } after a navigation, until the next video appears
+  let pending = null;   // { dir, at, from, fromId, fromSrc } after a navigation, until the next video appears
   let anim = null;      // { dir, start } while the slide transition runs
   let sheetP = 0;       // 0..1, how far the video has shrunk for the comments sheet
   const SLIDE_MS = 320;
@@ -313,14 +393,24 @@
   // Draw a video into the box (0, top, cw, bh): cover-fitted when the shapes are
   // close (vertical video, vertical overlay), contain-fitted when they aren't or
   // when the comments sheet has shrunk the box. Returns false if no frame yet.
-  const drawVideo = (v, dy, cw, bh) => {
+  const drawVideo = (v, dy, cw, bh, alpha = 1) => {
     if (!v || v.readyState < 2 || !v.videoWidth) return false;
+    const src = v.frame || v;
     const vw = v.videoWidth, vh = v.videoHeight;
     const ratio = (vw / vh) / (cw / bh);
     const cover = sheetP === 0 && Math.max(ratio, 1 / ratio) < 1.35;
     const scale = cover ? Math.max(cw / vw, bh / vh) : Math.min(cw / vw, bh / vh);
     const w = vw * scale, hh = vh * scale;
-    ctx.drawImage(v, (cw - w) / 2, (bh - hh) / 2 + dy, w, hh);
+    ctx.globalAlpha = alpha;
+    // A picture that doesn't fill the frame sits on a blurred, dimmed copy of itself.
+    if (v.isPhoto && !cover) {
+      const s = Math.max(cw / vw, bh / vh);
+      ctx.filter = 'blur(28px) brightness(.55)';
+      ctx.drawImage(src, (cw - vw * s) / 2, (bh - vh * s) / 2 + dy, vw * s, vh * s);
+      ctx.filter = 'none';
+    }
+    ctx.drawImage(src, (cw - w) / 2, (bh - hh) / 2 + dy, w, hh);
+    ctx.globalAlpha = 1;
     return true;
   };
 
@@ -335,13 +425,62 @@
   // Called right before navigating: freeze what's on screen and start pushing it
   // away at once, so the scroll answers instantly; the next video slides in
   // behind it as soon as the site has it.
+  let lastDir = 1;
   ds.slide = (dir) => {
     if (!shown) return;
+    lastDir = dir;
     snap.width = canvas.width; snap.height = canvas.height;
     snapCtx.drawImage(canvas, 0, 0);
     const now = performance.now();
-    pending = { dir, at: now, from: video, fromId: identity };
+    pending = { dir, at: now, from: video, fromId: identity, fromSrc: video && video.currentSrc };
     anim = { dir, start: now };
+  };
+
+  // ---------- ad skipping ----------
+  // Ads are skipped the moment they become the current video, in the direction
+  // you were scrolling, so the next real video slides in instead. YouTube marks
+  // them with its own ad elements; every site puts a "Sponsored" / "Ad" label on them.
+
+  ds.skipAds = ds.skipAds !== false;
+  const AD_ELEMENTS = 'ytd-ad-slot-renderer, ytd-in-feed-ad-layout-renderer, reels-ad-metadata-view-model, ad-badge-view-model';
+  const AD_LABEL = /^(sponsored|ad|promoted|patrocinado|publicidad|anuncio|gesponsert|sponsoris[ée]|sponsorizzato|реклама)$/i;
+
+  // Returns why the video looks like an ad ('' if it doesn't), which goes into the
+  // skip message so a wrong skip can be traced.
+  const isAd = (v) => {
+    if (!v || !v.isConnected) return '';
+    if (v.closest('.ad-showing')) return 'ad-showing'; // YouTube player showing an ad
+    const vr = v.getBoundingClientRect();
+    const cx = vr.left + vr.width / 2, cy = vr.top + vr.height / 2;
+    // An ad container counts only if it holds this video, not the one preloaded below.
+    for (const el of document.querySelectorAll(AD_ELEMENTS)) {
+      const r = el.getBoundingClientRect();
+      if (r.left <= cx && cx <= r.right && r.top <= cy && cy <= r.bottom) return el.tagName.toLowerCase();
+    }
+    // A label on this video: over it, or just above it (a reel's header).
+    for (const el of document.querySelectorAll('span, div, a, p, strong, b, badge-shape')) {
+      if (el.children.length > 1 || !AD_LABEL.test((el.textContent || '').trim())) continue;
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      if (r.right > vr.left - 40 && r.left < vr.right + 40 && r.top >= vr.top - 150 && r.bottom <= vr.bottom + 20) return 'label "' + el.textContent.trim() + '"';
+    }
+    return '';
+  };
+
+  ds.isAd = isAd;
+  let adStreak = 0, lastAdCheck = 0, gaveUp = '';
+  // Moves on from an ad. While pending, the outgoing slide (or the spinner) stays up,
+  // so the ad itself is never drawn.
+  const skipAd = (v, id, dir, now, why) => {
+    // A site that won't move past it (end of the feed) gets to show it after all.
+    if (++adStreak > 5) { gaveUp = id; adStreak = 0; return false; }
+    v.muted = true;
+    v.pause();
+    pending = { dir, at: now, from: v, fromId: id, fromSrc: v.currentSrc };
+    toast('Skipped an ad', 1400);
+    console.debug('__ds:ad:' + why);
+    console.debug('__ds:nav:' + dir);
+    return true;
   };
 
   const drawSpinner = (now, cw, ch, dpr) => {
@@ -793,9 +932,27 @@
   // ---------- frame loop ----------
 
   let pausedSince = 0, lastKick = 0;
+  let photoShown = null, photoFade = null;   // slideshow picture on screen / crossfade in progress
+  let lastTick = 0;
+
+  // Counts the frames a video actually presents (~30 a second), so the canvas is
+  // redrawn per new frame, not per screen refresh (300 a second on a 300 Hz monitor).
+  const frameCount = (v) => {
+    if (v.isPhoto) return v.currentTime;
+    if (!v.requestVideoFrameCallback) return Math.floor(v.currentTime * 30);
+    if (!v.__dsFrames) {
+      v.__dsFrames = 1;
+      const tick = () => { v.__dsFrames++; v.requestVideoFrameCallback(tick); };
+      v.requestVideoFrameCallback(tick);
+    }
+    return v.__dsFrames;
+  };
 
   const frame = (now) => {
     requestAnimationFrame(frame);
+    // Checks run at most ~60 times a second; transitions get every frame so they stay smooth.
+    if (!anim && !photoFade && now - lastTick < 15) return;
+    lastTick = now;
     if (!canvas.isConnected) (document.body || document.documentElement).append(canvas, host);
     if (!ds.on) {
       ds.peek = false;
@@ -830,11 +987,19 @@
           ds.userPaused = false;
           if (commentsOpen) closeComments();
         }
-        if (pending && (v !== pending.from || id !== pending.fromId)) {
-          // Start the new video right away instead of waiting on the site's autoplay.
+        // YouTube plays every video in one recycled element and updates the URL a
+        // moment before the video itself: with the same element, wait for new media.
+        if (pending && (v !== pending.from || (id !== pending.fromId && v.currentSrc !== pending.fromSrc))) {
           if (pending.from && pending.from !== v) pending.from.pause();
-          pending = null;
-          if (!window.__dsHold) ds.forcePlay(v);
+          const why = ds.skipAds && id !== gaveUp ? isAd(v) : '';
+          if (why && skipAd(v, id, pending.dir, now, why)) {
+            // Still pending: keep sliding toward the next real video.
+          } else {
+            // Start the new video right away instead of waiting on the site's autoplay.
+            pending = null;
+            adStreak = 0;
+            if (!window.__dsHold) ds.forcePlay(v);
+          }
         }
         video = v; identity = id;
       } else if (!lostAt) {
@@ -847,9 +1012,31 @@
     if (!shown && video.readyState < 2) return;
     setShown(true);
 
-    if (soundOn === video.muted) video.muted = !soundOn;
+    // Slideshow pager, and no flipping through pictures while held in the background.
+    const pages = video.isPhoto ? video.count : 0;
+    pager.classList.toggle('on', pages > 1 && !pending);
+    pager.classList.toggle('away', commentsOpen);
+    if (pages > 1) {
+      const t = (video.currentTime + 1) + ' / ' + pages;
+      if (pagerText.textContent !== t) pagerText.textContent = t;
+    }
+    if (window.__dsHold && video.isPhoto && !video.paused) video.pause();
+
+    // Not while moving on: that would unmute an ad being skipped.
+    if (!pending && soundOn === video.muted) video.muted = !soundOn;
     // Paused while comments are open: their little like hearts would confuse the lookup.
     if (!commentsOpen && now - refreshed > 400) { refreshed = now; refreshActions(); }
+
+    // Ads that slipped through: labels that load late, an ad the site advanced to
+    // by itself, or one that was current when you switched to this feed.
+    if (ds.skipAds && !pending && !anim && !window.__dsHold && identity !== gaveUp && now - lastAdCheck > 400) {
+      lastAdCheck = now;
+      const why = adStreak < 5 ? isAd(video) : '';
+      if (why) {
+        ds.slide(lastDir);
+        skipAd(video, identity, lastDir, now, 'late, ' + why);
+      }
+    }
 
     // Watchdog: a video that's paused although nobody asked for it (the site
     // re-paused it, or autoplay was lost) gets nudged back into playing.
@@ -889,12 +1076,27 @@
       drawn = '';
       return;
     }
-    const key = [identity, video.currentTime, video.paused, cw, ch, sheetP].join('|');
-    if (key === drawn && !easing) return;
+    // A slideshow moving to its next picture crossfades into it.
+    if (video.isPhoto) {
+      const img = video.frame;
+      if (photoShown && img !== photoShown.img && photoShown.id === identity && img && img.complete && photoShown.img.complete) {
+        photoFade = { from: photoShown.img, start: now };
+      }
+      photoShown = img ? { img, id: identity } : null;
+    }
+    const fading = photoFade && now - photoFade.start < 260;
+    const key = [identity, frameCount(video), video.paused, cw, ch, sheetP].join('|');
+    if (key === drawn && !easing && !fading) return;
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, cw, ch);
-    if (!drawVideo(video, 0, cw, bh)) { ctx.drawImage(snap, 0, 0); return; }
-    drawn = key;
+    if (fading) {
+      const f = photoFade.from;
+      drawVideo({ isPhoto: true, frame: f, videoWidth: f.naturalWidth, videoHeight: f.naturalHeight, readyState: 4 }, 0, cw, bh);
+    } else {
+      photoFade = null;
+    }
+    if (!drawVideo(video, 0, cw, bh, fading ? (now - photoFade.start) / 260 : 1)) { ctx.drawImage(snap, 0, 0); return; }
+    drawn = fading ? '' : key;
     if (video.paused && !commentsOpen) drawPlayIcon(cw, bh, dpr);
   };
   requestAnimationFrame(frame);
@@ -906,7 +1108,14 @@
     e.preventDefault();
     clearTimeout(unlock);
     unlock = setTimeout(() => { locked = false; }, 280);
-    if (locked || Math.abs(e.deltaY) < 4) return;
+    if (locked) return;
+    // Sideways on a slideshow flips through its pictures.
+    if (video && video.isPhoto && Math.abs(e.deltaX) > Math.abs(e.deltaY) && Math.abs(e.deltaX) >= 4) {
+      locked = true;
+      video.slide(e.deltaX > 0 ? 1 : -1);
+      return;
+    }
+    if (Math.abs(e.deltaY) < 4) return;
     locked = true;
     const dir = e.deltaY > 0 ? 1 : -1;
     ds.slide(dir);
