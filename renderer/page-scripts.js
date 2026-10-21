@@ -148,6 +148,8 @@
       }
       for (const m of document.querySelectorAll('video, audio')) m.volume = ${v};
     })()`,
+    // The equipped scroll effect's settings (effects.js), or null for the plain slide.
+    effect: (fx) => `window.__dsFill && (window.__dsFill.effect = ${JSON.stringify(fx)})`,
     skipAds: (on) => `window.__dsFill && (window.__dsFill.skipAds = ${on ? 'true' : 'false'})`,
 
     slide: (dir) => `(() => {

@@ -61,6 +61,8 @@ let editing = false;       // the last click landed in a text box
 let wantFocus = false;     // what we last asked main for
 const playing = {};        // site -> whether we last released (true) or held (false) it
 const loading = {};        // site -> { progress, revealed, timer } for the loading cover
+const filling = {};        // site -> whether fill mode is showing a video right now
+const guarded = {};        // site -> when we last pulled it back to its feed
 
 // ---------- Helpers ----------
 
@@ -114,20 +116,23 @@ function ensureView(site, url = PAGES[site].url) {
 
   wv.addEventListener('dom-ready', () => {
     ready.add(site);
+    filling[site] = false;
     // The blank page loading underneath grabs focus; give it back to the start page's search.
     if (site === WEB && site === current && onStartPage() && !panel) $('#ws-input').focus();
     bumpLoading(site, 0.55);
     const l = loading[site];
     if (!l.revealed) {
-      // Fallback: pages without a video (login walls, fill mode off) still get shown.
+      // Fallback for pages without a video (a login wall): stop loading. A feed then
+      // shows the "no video" panel instead of the site.
       clearTimeout(l.timer);
       l.timer = setTimeout(() => site === current && reveal(site), revealTimeout(site));
     }
     run(site, PAGE_SCRIPTS.focusWatch);
     run(site, PAGE_SCRIPTS.volume(gain()));
     if (site !== WEB) {
-      run(site, PAGE_SCRIPTS.fill(state.settings.fill));
+      run(site, PAGE_SCRIPTS.fill(true));
       run(site, PAGE_SCRIPTS.skipAds(state.settings.skipAds));
+      Cases.applyEffect(site);
     }
     // A fresh page has lost any hold we put on it; re-apply what it should be doing.
     delete playing[site];
@@ -146,8 +151,8 @@ function ensureView(site, url = PAGES[site].url) {
       updateNav();
     }
   });
-  wv.addEventListener('did-navigate', updateNav);
-  wv.addEventListener('did-navigate-in-page', updateNav);
+  wv.addEventListener('did-navigate', (e) => { updateNav(); guardFeed(site, e.url); });
+  wv.addEventListener('did-navigate-in-page', (e) => { updateNav(); guardFeed(site, e.url); });
   if (site === WEB) {
     wv.addEventListener('did-navigate', (e) => rememberVisit(e.url));
     wv.addEventListener('page-title-updated', (e) => rememberVisit(wv.getURL(), e.title));
@@ -155,9 +160,18 @@ function ensureView(site, url = PAGES[site].url) {
   wv.addEventListener('console-message', (e) => {
     const f = /^__ds:focus:([01])$/.exec(e.message);
     if (f) return setEditing(f[1] === '1');
-    if (e.message === '__ds:fill:1') return reveal(site, 250);
-    const m = /^__ds:nav:(-?1)$/.exec(e.message);
-    if (m && site === current) navigate(Number(m[1]), true);
+    if (e.message === '__ds:fill:1' || e.message === '__ds:fill:0') {
+      filling[site] = e.message.endsWith('1');
+      if (filling[site]) reveal(site, 250);
+      return renderCover();
+    }
+    if (e.message.startsWith('__ds:copy:')) {
+      ds.copyText(e.message.slice('__ds:copy:'.length));
+      return;
+    }
+    // nav: your scroll on the video; skip: moving past an ad (doesn't count toward a case).
+    const m = /^__ds:(nav|skip):(-?1)$/.exec(e.message);
+    if (m && site === current) navigate(Number(m[2]), true, m[1] === 'skip');
   });
   wv.addEventListener('render-process-gone', () => {
     ready.delete(site);
@@ -182,13 +196,14 @@ function loadUrl(site, url) {
 
 // How long to wait for a video before showing the page anyway (login walls, no video).
 function revealTimeout(site) {
-  return state.settings.fill && loginSite !== site ? 12000 : 600;
+  return loginSite !== site ? 12000 : 600;
 }
 
 function resetLoading(site) {
   clearTimeout(loading[site]?.timer);
   // The browser shows pages as they load, like any browser; only feeds wait for a video.
   loading[site] = { progress: 0.06, revealed: site === WEB, timer: null };
+  filling[site] = false;
   renderCover();
 }
 
@@ -222,6 +237,9 @@ function creepLoading() {
 function renderCover() {
   const l = current && loading[current];
   appEl.classList.toggle('covered', !!l && !l.revealed);
+  // Loaded, but there's no video to fill the overlay with (a login wall, or the
+  // site lost its feed): cover the site with our own panel and stay immersed.
+  appEl.classList.toggle('stuck', !!l && l.revealed && !!SITES[current] && current !== loginSite && !filling[current]);
   if (!l) return;
   $('#cover-fill').style.width = (l.progress * 100).toFixed(1) + '%';
   $('#cover-use').setAttribute('href', '#i-' + current);
@@ -237,7 +255,6 @@ function setLoading(on) {
 function updateNav() {
   const wv = current && views[current];
   const live = !!(wv && ready.has(current));
-  $('#btn-back').disabled = !(live && wv.canGoBack());
   $('#btn-reload').disabled = !wv;
   $('#btn-web-back').disabled = !(live && current === WEB && wv.canGoBack());
   $('#btn-web-forward').disabled = !(live && current === WEB && wv.canGoForward());
@@ -338,6 +355,36 @@ function openWeb(text) {
   if (!views[WEB]) ensureView(WEB, url);
   else loadUrl(WEB, url);
   views[WEB].focus();
+}
+
+// ---------- Staying on the feed ----------
+// A feed that wanders off its feed page (YouTube's home, a channel, Instagram's
+// main feed) goes straight back, so you never end up on the regular site.
+
+const FEED_PAGES = {
+  yt: { host: /(^|\.)youtube\.com$/, ok: /^\/shorts(\/|$)/ },
+  ig: { host: /(^|\.)instagram\.com$/, ok: /^\/(reels?|accounts|challenge)(\/|$)/ },
+  tt: { host: /(^|\.)tiktok\.com$/, ok: /^\/($|foryou|en\/?$|login|@[^/]+\/(video|photo)\/)/ },
+};
+
+function guardFeed(site, url) {
+  const rule = FEED_PAGES[site];
+  if (!rule || site === loginSite) return;
+  let u;
+  try { u = new URL(url); } catch { return; }
+  // Other hosts are sign-in and consent pages, which have to load.
+  if (!rule.host.test(u.hostname) || rule.ok.test(u.pathname)) return;
+  if (Date.now() - (guarded[site] || 0) < 5000) return;
+  guarded[site] = Date.now();
+  loadUrl(site, SITES[site].url);
+}
+
+function reloadCurrent() {
+  const wv = current && views[current];
+  if (!wv) return;
+  resetLoading(current);
+  if (SITES[current]) loadUrl(current, SITES[current].url);
+  else wv.reload();
 }
 
 // ---------- Focus ----------
@@ -508,8 +555,9 @@ async function goHome() {
 }
 
 // fromPage: the page already started its slide animation itself (wheel on the video).
-async function navigate(dir, fromPage = false) {
-  if (!current || current === WEB) return;
+async function navigate(dir, fromPage = false, skip = false) {
+  if (!current || current === WEB || Cases.isOpen()) return;
+  if (!skip) Cases.countScroll();
   if (!fromPage) await run(current, PAGE_SCRIPTS.slide(dir));
   const how = await run(current, PAGE_SCRIPTS.navigate(dir));
   if (how) return;
@@ -529,23 +577,12 @@ async function navigate(dir, fromPage = false) {
 // and only while no panel covers it and the overlay is on screen.
 function syncPlayback() {
   for (const site of Object.keys(views)) {
-    const want = site === current && !panel && (overlayVisible || !state.settings.pauseOnHide);
+    const want = site === current && !panel && !Cases.isOpen() && (overlayVisible || !state.settings.pauseOnHide);
     if (playing[site] === want) continue;
     playing[site] = want;
     run(site, want ? PAGE_SCRIPTS.release : PAGE_SCRIPTS.hold);
   }
   applyAudio();
-}
-
-async function setFill(on) {
-  state = await ds.set({ fill: on });
-  for (const site of Object.keys(views)) {
-    if (site === WEB) continue;
-    run(site, PAGE_SCRIPTS.fill(on));
-    if (!on) reveal(site);
-  }
-  $('#btn-fill').classList.toggle('on', on);
-  toast(on ? 'Fill mode — video fills the overlay' : 'Site layout — likes, comments & captions');
 }
 
 // Only the visible feed may make sound; background tabs stay muted no matter what.
@@ -618,7 +655,7 @@ function setPanel(name) {
   if (name) exitFullscreen();
   if (name !== 'settings' && recording) stopRecording();
   panel = name;
-  for (const id of ['settings', 'accounts']) {
+  for (const id of ['settings', 'accounts', 'collection']) {
     appEl.classList.toggle(`${id}-open`, name === id);
     $('#' + id).setAttribute('aria-hidden', String(name !== id));
   }
@@ -776,6 +813,7 @@ function renderSettings() {
   $('#opt-remote').checked = s.remoteDesktop;
   $('#opt-stretch').checked = s.antiStretch;
   $('#opt-ads').checked = s.skipAds;
+  $('#opt-cases').checked = s.cases;
   $('#opt-keep').checked = s.keepFeedsLoaded;
   range.disabled = s.remoteDesktop;
   $('#btn-clickthrough').textContent = state.clickThrough ? 'Disable' : 'Enable';
@@ -917,18 +955,9 @@ for (const el of document.querySelectorAll('[data-site]')) {
 }
 
 $('#btn-home').addEventListener('click', () => { setPanel(null); goHome(); });
-$('#btn-back').addEventListener('click', () => {
-  const wv = current && views[current];
-  if (wv && wv.canGoBack()) wv.goBack();
-});
-$('#btn-reload').addEventListener('click', () => {
-  const wv = current && views[current];
-  if (wv) {
-    resetLoading(current);
-    wv.reload();
-  }
-});
-$('#btn-fill').addEventListener('click', () => setFill(!state.settings.fill));
+$('#btn-reload').addEventListener('click', reloadCurrent);
+$('#stuck-reload').addEventListener('click', reloadCurrent);
+$('#stuck-login').addEventListener('click', () => setPanel('accounts'));
 $('#btn-volume').addEventListener('click', () => {
   setMuted(!muted);
   toast(muted ? '🔇 Muted' : '🔊 Sound on', 900);
@@ -1015,6 +1044,10 @@ $('#opt-keep').addEventListener('change', async (e) => {
   state = await ds.set({ keepFeedsLoaded: e.target.checked });
   if (e.target.checked) preloadFeeds();
   scheduleUnloads();
+});
+$('#opt-cases').addEventListener('change', async (e) => {
+  state = await ds.set({ cases: e.target.checked });
+  Cases.renderCaseButton();
 });
 $('#opt-ads').addEventListener('change', async (e) => {
   state = await ds.set({ skipAds: e.target.checked });
@@ -1188,7 +1221,7 @@ $('#btn-size-reset').addEventListener('click', () => ds.sizePreset('default'));
   renderVolume();
   renderUpdate(state.update);
   updateNav();
-  $('#btn-fill').classList.toggle('on', state.settings.fill);
+  Cases.renderCaseButton();
   await refreshAccounts();
   if (state.settings.lastSite) openSite(state.settings.lastSite);
   // Otherwise feeds load when you open them (see Memory above).

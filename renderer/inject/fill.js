@@ -9,6 +9,10 @@
 // This file is one expression: a function the overlay calls as install(on).
 // It talks back to the overlay through console messages:
 //   '__ds:nav:<1|-1>'  wheel tick on the video -> next / previous
+//   '__ds:skip:<1|-1>' moving past an ad (not your scroll)
+//   '__ds:ad:<why>'    what made that video look like an ad
+//   '__ds:copy:<url>'  share: put this link on the clipboard
+//   '__ds:focus:<1|0>' (page-scripts) clicked a text box / anything else
 //   '__ds:fill:<1|0>'  started / stopped showing a video
 (function install(on) {
   const ds = window.__dsFill || (window.__dsFill = {});
@@ -133,13 +137,6 @@
     .act.pop .circ { animation: pop .4s cubic-bezier(.2,.8,.2,1); }
     @keyframes pop { 35% { transform: scale(1.28); } }
 
-    .back {
-      position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
-      padding: 9px 16px; border-radius: 999px; cursor: pointer; pointer-events: auto;
-      background: rgba(10,10,15,.88); color: #fff; border: 1px solid rgba(255,255,255,.18);
-      font: 600 13px system-ui, 'Segoe UI', sans-serif; backdrop-filter: blur(10px);
-      box-shadow: 0 8px 24px rgba(0,0,0,.5); display: none;
-    }
 
     .sheet {
       position: absolute; left: 0; right: 0; bottom: 0; height: 66%;
@@ -279,13 +276,6 @@
     paintSound();
   });
 
-  // Share sheets and login prompts live in the site's own layout, so fill mode
-  // steps aside ("peeks") while they're open.
-  const back = h('button', { class: 'back', text: 'Back to video', onclick: () => { ds.peek = false; } });
-  addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && ds.peek) setTimeout(() => { ds.peek = false; }, 0);
-  });
-
   // ---------- comments sheet ----------
 
   const listEl = h('div', { class: 'list' });
@@ -308,7 +298,7 @@
     pagerText,
     h('button', { title: 'Next picture', text: '›', onclick: () => video && video.isPhoto && video.slide(1) }));
 
-  root.append(col, back, sheet, pager, toastEl);
+  root.append(col, sheet, pager, toastEl);
 
   // ---------- TikTok slideshows ----------
   // Photo posts are a Swiper carousel of images that advances by itself, with the
@@ -449,6 +439,7 @@
     const now = performance.now();
     pending = { dir, at: now, from: video, fromId: identity, fromSrc: video && video.currentSrc };
     anim = { dir, start: now };
+    startEffect(dir, now);
   };
 
   // ---------- ad skipping ----------
@@ -494,8 +485,333 @@
     pending = { dir, at: now, from: v, fromId: id, fromSrc: v.currentSrc };
     toast('Skipped an ad', 1400);
     console.debug('__ds:ad:' + why);
-    console.debug('__ds:nav:' + dir);
+    console.debug('__ds:skip:' + dir);
     return true;
+  };
+
+  // ---------- scroll effects ----------
+  // The equipped scroll effect (won from a scroll case, set by the overlay as
+  // ds.effect): how the next video arrives (a transition) and what flies across
+  // the screen while it does (particles). Without one, it's the plain slide.
+  // Everything is kept gentle (thinned-out, translucent particles, a faint flash,
+  // small movements) since it plays on every scroll, over what you're watching.
+
+  ds.effect = ds.effect || null;
+  const fxCanvas = h('canvas');           // scratch copy for pixelate / glitch
+  const fxCtx = fxCanvas.getContext('2d');
+  let parts = [], partsAt = 0, flash = null, shards = null;
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  const pickColor = (c) => c[Math.floor(Math.random() * c.length)];
+  const clamp01 = (x) => Math.max(0, Math.min(1, x));
+  const effectsLive = () => parts.length > 0 || !!flash;
+
+  const easeInOut = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+  const bounce = (x) => {
+    const n = 7.5625, d = 2.75;
+    if (x < 1 / d) return n * x * x;
+    if (x < 2 / d) return n * (x -= 1.5 / d) * x + 0.75;
+    if (x < 2.5 / d) return n * (x -= 2.25 / d) * x + 0.9375;
+    return n * (x -= 2.625 / d) * x + 0.984375;
+  };
+  // Transforms about the middle of the screen.
+  const scaleAt = (cw, ch, sx, sy = sx) => { ctx.translate(cw / 2, ch / 2); ctx.scale(sx, sy); ctx.translate(-cw / 2, -ch / 2); };
+  const rotateAt = (cw, ch, a) => { ctx.translate(cw / 2, ch / 2); ctx.rotate(a); ctx.translate(-cw / 2, -ch / 2); };
+
+  const edgeGlow = (f, dpr, draw) => {
+    ctx.save();
+    ctx.strokeStyle = f.glow || pickColor(f.c || ['#fff']);
+    ctx.shadowColor = ctx.strokeStyle;
+    ctx.globalAlpha = 0.7;
+    ctx.shadowBlur = 10 * dpr;
+    ctx.lineWidth = 2 * dpr;
+    ctx.beginPath();
+    draw();
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  const pixelatePass = (cw, ch, block) => {
+    const w = Math.max(1, Math.ceil(cw / block)), hh = Math.max(1, Math.ceil(ch / block));
+    if (fxCanvas.width !== w || fxCanvas.height !== hh) { fxCanvas.width = w; fxCanvas.height = hh; }
+    fxCtx.drawImage(canvas, 0, 0, cw, ch, 0, 0, w, hh);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(fxCanvas, 0, 0, w, hh, 0, 0, cw, ch);
+    ctx.imageSmoothingEnabled = true;
+  };
+
+  // Each draws one moment (p: 0..1, e: eased) of the old frame (snap) leaving and
+  // the next video arriving (incoming(alpha, transform)).
+  const TRANSITIONS = {
+    slide(p, e, dir, cw, ch, incoming) {
+      const off = ch * e * dir;
+      ctx.drawImage(snap, 0, -off);
+      incoming(1, () => ctx.translate(0, ch * dir - off));
+    },
+    push(p, e, dir, cw, ch, incoming) {
+      const off = cw * e * dir;
+      ctx.drawImage(snap, -off, 0);
+      incoming(1, () => ctx.translate(cw * dir - off, 0));
+    },
+    zoom(p, e, dir, cw, ch, incoming) {
+      incoming(e, () => scaleAt(cw, ch, 0.94 + 0.06 * e));
+      ctx.save();
+      ctx.globalAlpha = 1 - e;
+      scaleAt(cw, ch, 1 + 0.15 * e);
+      ctx.drawImage(snap, 0, 0);
+      ctx.restore();
+    },
+    fade(p, e, dir, cw, ch, incoming) {
+      incoming(1);
+      ctx.save();
+      ctx.globalAlpha = 1 - e;
+      ctx.filter = 'blur(' + (e * 6).toFixed(1) + 'px)';
+      ctx.drawImage(snap, 0, 0);
+      ctx.restore();
+    },
+    spin(p, e, dir, cw, ch, incoming) {
+      incoming(e, () => { rotateAt(cw, ch, -(1 - e) * dir * 0.22); scaleAt(cw, ch, 0.8 + 0.2 * e); });
+      ctx.save();
+      ctx.globalAlpha = 1 - e;
+      rotateAt(cw, ch, e * dir * 0.22);
+      scaleAt(cw, ch, 1 - 0.25 * e);
+      ctx.drawImage(snap, 0, 0);
+      ctx.restore();
+    },
+    flip(p, e, dir, cw, ch, incoming) {
+      // A card turning over: the old frame narrows to nothing, the new one widens back.
+      if (p < 0.5) {
+        ctx.save();
+        scaleAt(cw, ch, Math.max(0.001, 1 - easeInOut(p * 2)), 1);
+        ctx.drawImage(snap, 0, 0);
+        ctx.restore();
+      } else {
+        incoming(1, () => scaleAt(cw, ch, Math.max(0.001, easeInOut(p * 2 - 1)), 1));
+      }
+    },
+    drop(p, e, dir, cw, ch, incoming) {
+      ctx.drawImage(snap, 0, 0);
+      ctx.fillStyle = 'rgba(0,0,0,' + (0.35 * e).toFixed(3) + ')';
+      ctx.fillRect(0, 0, cw, ch);
+      incoming(1, () => ctx.translate(0, -dir * ch * (1 - bounce(p))));
+    },
+    wipe(p, e, dir, cw, ch, incoming, f, dpr) {
+      ctx.drawImage(snap, 0, 0);
+      const slope = 0.35 * cw, x = -slope + e * (cw + slope * 2);
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(0, 0); ctx.lineTo(x, 0); ctx.lineTo(x - slope, ch); ctx.lineTo(0, ch);
+      ctx.closePath();
+      ctx.clip();
+      incoming(1);
+      ctx.restore();
+      if (p < 1) edgeGlow(f, dpr, () => { ctx.moveTo(x, 0); ctx.lineTo(x - slope, ch); });
+    },
+    iris(p, e, dir, cw, ch, incoming, f, dpr) {
+      ctx.drawImage(snap, 0, 0);
+      const r = e * Math.hypot(cw, ch) / 2 * 1.05;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cw / 2, ch / 2, r, 0, Math.PI * 2);
+      ctx.clip();
+      incoming(1);
+      ctx.restore();
+      if (p < 1) edgeGlow(f, dpr, () => ctx.arc(cw / 2, ch / 2, r, 0, Math.PI * 2));
+    },
+    blinds(p, e, dir, cw, ch, incoming) {
+      ctx.drawImage(snap, 0, 0);
+      const n = 9, sh = ch / n;
+      ctx.save();
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) {
+        const k = 1 - Math.pow(1 - clamp01(p * 1.6 - (dir > 0 ? i : n - 1 - i) * 0.07), 3);
+        ctx.rect(0, i * sh, cw, sh * k + 1);
+      }
+      ctx.clip();
+      incoming(1);
+      ctx.restore();
+    },
+    pixelate(p, e, dir, cw, ch, incoming, f, dpr) {
+      if (p < 0.5) ctx.drawImage(snap, 0, 0); else incoming(1);
+      const k = p < 0.5 ? p * 2 : (1 - p) * 2;
+      const block = 1 + Math.round(k * k * 16 * dpr);
+      if (block > 1) pixelatePass(cw, ch, block);
+    },
+    glitch(p, e, dir, cw, ch, incoming, f, dpr) {
+      if (p < 0.5) ctx.drawImage(snap, 0, 0); else incoming(1);
+      const k = 1 - Math.abs(p - 0.5) * 2;   // strongest halfway through
+      if (fxCanvas.width !== cw || fxCanvas.height !== ch) { fxCanvas.width = cw; fxCanvas.height = ch; }
+      fxCtx.drawImage(canvas, 0, 0);
+      for (let i = 0; i < 6; i++) {
+        const y = rnd(0, ch), hh = rnd(4, 30) * dpr;
+        ctx.drawImage(fxCanvas, 0, y, cw, hh, rnd(-1, 1) * 24 * dpr * k, y, cw, hh);
+      }
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < 2; i++) {
+        ctx.globalAlpha = 0.12 * k;
+        ctx.fillStyle = pickColor(f.c || ['#22d3ee']);
+        ctx.fillRect(0, rnd(0, ch), cw, rnd(2, 12) * dpr);
+      }
+      ctx.restore();
+    },
+    shatter(p, e, dir, cw, ch, incoming, f, dpr) {
+      incoming(1);
+      if (!shards) return;
+      const t = p * (f.ms || 450) / 1000;
+      ctx.save();
+      ctx.globalAlpha = 1 - p * p;
+      for (const s of shards) {
+        const x = s.x + s.vx * t, y = s.y + s.vy * t + 1300 * dpr * t * t;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.translate(x + s.w / 2, y + s.h / 2);
+        ctx.rotate(s.vr * t);
+        ctx.drawImage(snap, s.x, s.y, s.w, s.h, -s.w / 2, -s.h / 2, s.w, s.h);
+      }
+      ctx.restore();
+    },
+  };
+
+  // The old frame broken into pieces that fly out from the middle.
+  const makeShards = (cw, ch, dpr) => {
+    const cols = 5, rows = 8, w = cw / cols, hh = ch / rows, out = [];
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const x = c * w, y = r * hh;
+        const dx = (x + w / 2 - cw / 2) / cw, dy = (y + hh / 2 - ch / 2) / ch;
+        out.push({ x, y, w: Math.ceil(w) + 1, h: Math.ceil(hh) + 1, vx: dx * rnd(700, 1500) * dpr, vy: dy * rnd(700, 1500) * dpr - rnd(150, 450) * dpr, vr: rnd(-5, 5) });
+      }
+    }
+    return out;
+  };
+
+  // Particles start at the scroll and live a second or so. Speeds are in px/s.
+  const spawnParticles = (f, cw, ch, dpr) => {
+    const types = [].concat(f.p || []);
+    if (!types.length) return;
+    const per = Math.ceil(Math.min(70, (f.n || 16) * 0.55) / types.length);
+    const cx = cw / 2, cy = ch / 2, big = Math.min(cw, ch);
+    for (const type of types) {
+      const count = type === 'ring' || type === 'bolt' ? Math.min(per, 4) : per;
+      for (let i = 0; i < count; i++) {
+        const a = rnd(0, Math.PI * 2), sp = rnd(250, 900) * dpr;
+        const q = { type, c: pickColor(f.c || ['#ffffff']), t: 0, delay: 0, rot: rnd(0, 6.28), vr: rnd(-6, 6), g: 0, vx: 0, vy: 0, x: cx, y: cy, life: 1, r: 6 * dpr };
+        switch (type) {
+          case 'bubble': Object.assign(q, { x: rnd(0, cw), y: ch + rnd(0, ch * 0.15), vx: rnd(-30, 30) * dpr, vy: -rnd(260, 560) * dpr, life: rnd(0.8, 1.3), r: rnd(6, 16) * dpr }); break;
+          case 'snow': Object.assign(q, { x: rnd(0, cw), y: -rnd(0, ch * 0.3), vx: rnd(-40, 40) * dpr, vy: rnd(180, 420) * dpr, life: rnd(1, 1.5), r: rnd(2, 5) * dpr }); break;
+          case 'petal': Object.assign(q, { x: rnd(-cw * 0.1, cw), y: -rnd(0, ch * 0.3), vx: rnd(40, 160) * dpr, vy: rnd(200, 420) * dpr, life: rnd(1.1, 1.6), r: rnd(5, 9) * dpr }); break;
+          case 'pixel': Object.assign(q, { vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: rnd(0.5, 0.8), r: rnd(4, 9) * dpr }); break;
+          case 'ember': Object.assign(q, { x: rnd(0, cw), y: ch + rnd(0, 20) * dpr, vx: rnd(-80, 80) * dpr, vy: -rnd(320, 760) * dpr, life: rnd(0.8, 1.3), r: rnd(2, 5) * dpr }); break;
+          case 'spark': Object.assign(q, { vx: Math.cos(a) * sp * 1.4, vy: Math.sin(a) * sp * 1.4, life: rnd(0.4, 0.75), r: rnd(10, 22) * dpr }); break;
+          case 'confetti': { const left = i % 2 === 0; Object.assign(q, { x: left ? 0 : cw, y: ch, vx: (left ? 1 : -1) * rnd(200, 700) * dpr, vy: -rnd(800, 1400) * dpr, g: 1800 * dpr, life: rnd(1.1, 1.5), r: rnd(4, 8) * dpr }); break; }
+          case 'rain': Object.assign(q, { x: rnd(0, cw * 1.1), y: -rnd(0, ch * 0.5), vx: -120 * dpr, vy: rnd(1500, 2100) * dpr, life: rnd(0.5, 0.8), r: rnd(14, 28) * dpr }); break;
+          case 'glow': Object.assign(q, { x: rnd(0, cw), y: rnd(0, ch), vx: rnd(-25, 25) * dpr, vy: rnd(-40, 10) * dpr, life: rnd(0.8, 1.4), r: rnd(3, 7) * dpr }); break;
+          case 'galaxy': Object.assign(q, { a, d: rnd(0.08, 0.55) * big, spin: rnd(2.5, 5.5) * (i % 2 ? 1 : 1), life: rnd(0.8, 1.2), r: rnd(1.5, 3.5) * dpr }); break;
+          case 'star': Object.assign(q, { vx: Math.cos(a) * sp * 0.8, vy: Math.sin(a) * sp * 0.8, g: 400 * dpr, life: rnd(0.7, 1.1), r: rnd(6, 12) * dpr }); break;
+          case 'note': Object.assign(q, { x: rnd(0, cw), y: ch, vy: -rnd(220, 440) * dpr, life: rnd(1, 1.4), r: rnd(16, 26) * dpr, sway: rnd(0, 6.28) }); break;
+          case 'bolt': {
+            const pts = [], x0 = rnd(0.15, 0.85) * cw, x1 = rnd(0.15, 0.85) * cw, y1 = rnd(0.55, 1) * ch;
+            for (let k = 0; k <= 10; k++) pts.push([x0 + (x1 - x0) * k / 10 + (k && k < 10 ? rnd(-40, 40) * dpr : 0), y1 * k / 10]);
+            Object.assign(q, { pts, life: 0.35, delay: i * 0.09, r: rnd(2, 4) * dpr });
+            break;
+          }
+          case 'ring': Object.assign(q, { life: 0.75, delay: i * 0.12, r: Math.hypot(cw, ch) / 2 }); break;
+          case 'warp': Object.assign(q, { a, d: rnd(0, 40) * dpr, v: rnd(500, 1500) * dpr, life: rnd(0.5, 0.8), r: rnd(1, 2.5) * dpr }); break;
+          case 'heart': Object.assign(q, { vx: Math.cos(a) * sp * 0.5, vy: -rnd(300, 700) * dpr, life: rnd(0.9, 1.3), r: rnd(12, 24) * dpr }); break;
+          case 'coin': Object.assign(q, { x: cx + rnd(-0.25, 0.25) * cw, y: ch, vx: rnd(-320, 320) * dpr, vy: -rnd(1000, 1600) * dpr, g: 2200 * dpr, life: rnd(1.1, 1.5), r: rnd(8, 14) * dpr }); break;
+        }
+        parts.push(q);
+      }
+    }
+  };
+
+  const shapes = {
+    star(r) { ctx.beginPath(); for (let i = 0; i < 10; i++) { const a = i * Math.PI / 5 - Math.PI / 2, rr = i % 2 ? r * 0.45 : r; ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); } ctx.closePath(); ctx.fill(); },
+    heart(r) { ctx.beginPath(); ctx.moveTo(0, r * 0.35); ctx.bezierCurveTo(-r * 1.2, -r * 0.45, -r * 0.45, -r * 1.25, 0, -r * 0.45); ctx.bezierCurveTo(r * 0.45, -r * 1.25, r * 1.2, -r * 0.45, 0, r * 0.35); ctx.fill(); },
+  };
+
+  const drawEffects = (now, cw, ch) => {
+    const dt = Math.min(0.05, Math.max(0, (now - partsAt) / 1000));
+    partsAt = now;
+    if (flash) {
+      const k = (now - flash.start) / 220;
+      if (k >= 1) flash = null;
+      else { ctx.save(); ctx.globalAlpha = 0.16 * (1 - k); ctx.fillStyle = flash.c; ctx.fillRect(0, 0, cw, ch); ctx.restore(); }
+    }
+    if (!parts.length) return;
+    const cx = cw / 2, cy = ch / 2;
+    ctx.save();
+    parts = parts.filter((q) => {
+      q.t += dt;
+      const t = q.t - q.delay;
+      if (t < 0) return true;
+      if (t > q.life) return false;
+      const k = t / q.life;
+      q.vy += q.g * dt;
+      q.x += q.vx * dt;
+      q.y += q.vy * dt;
+      q.rot += q.vr * dt;
+      ctx.globalAlpha = 0.7 * Math.min(1, (1 - k) * 1.6) * Math.min(1, t * 12);
+      ctx.fillStyle = ctx.strokeStyle = q.c;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      switch (q.type) {
+        case 'bubble': ctx.lineWidth = q.r * 0.18; ctx.beginPath(); ctx.arc(q.x, q.y, q.r, 0, 6.29); ctx.stroke(); break;
+        case 'snow': case 'glow': case 'ember':
+          if (q.type !== 'snow') { ctx.shadowColor = q.c; ctx.shadowBlur = q.r * 2.5; }
+          if (q.type === 'glow') ctx.globalAlpha *= 0.5 + 0.5 * Math.sin(t * 9 + q.rot);
+          ctx.beginPath(); ctx.arc(q.x, q.y, q.r, 0, 6.29); ctx.fill(); ctx.shadowBlur = 0;
+          break;
+        case 'petal': ctx.translate(q.x + Math.sin(t * 4 + q.rot) * 20, q.y); ctx.rotate(q.rot); ctx.beginPath(); ctx.ellipse(0, 0, q.r, q.r * 0.55, 0, 0, 6.29); ctx.fill(); break;
+        case 'pixel': ctx.fillRect(q.x - q.r / 2, q.y - q.r / 2, q.r, q.r); break;
+        case 'spark': case 'rain': {
+          const len = q.r, sp = Math.hypot(q.vx, q.vy) || 1;
+          ctx.lineWidth = q.type === 'rain' ? q.r * 0.08 : q.r * 0.14; ctx.lineCap = 'round';
+          ctx.beginPath(); ctx.moveTo(q.x, q.y); ctx.lineTo(q.x - q.vx / sp * len, q.y - q.vy / sp * len); ctx.stroke();
+          break;
+        }
+        case 'confetti': ctx.translate(q.x, q.y); ctx.rotate(q.rot); ctx.scale(1, Math.cos(t * 10 + q.rot)); ctx.fillRect(-q.r, -q.r * 0.5, q.r * 2, q.r); break;
+        case 'galaxy': {
+          const d = q.d * (1 - k * 0.85), ang = q.a + q.spin * t;
+          ctx.shadowColor = q.c; ctx.shadowBlur = q.r * 2.5;
+          ctx.beginPath(); ctx.arc(cx + Math.cos(ang) * d, cy + Math.sin(ang) * d, q.r, 0, 6.29); ctx.fill(); ctx.shadowBlur = 0;
+          break;
+        }
+        case 'star': ctx.translate(q.x, q.y); ctx.rotate(q.rot); shapes.star(q.r); break;
+        case 'heart': ctx.translate(q.x, q.y); ctx.rotate(Math.sin(t * 6 + q.rot) * 0.3); shapes.heart(q.r); break;
+        case 'note': ctx.font = '700 ' + Math.round(q.r) + 'px system-ui, sans-serif'; ctx.fillText(q.rot > 3 ? '♪' : '♫', q.x + Math.sin(t * 5 + q.sway) * 18, q.y); break;
+        case 'bolt':
+          // A single soft streak that fades, not a strobe.
+          ctx.globalAlpha = 0.55 * (1 - k);
+          ctx.shadowColor = q.c; ctx.shadowBlur = 8; ctx.lineWidth = q.r * 0.7; ctx.lineJoin = 'round';
+          ctx.beginPath(); q.pts.forEach(([x, y], j) => (j ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke(); ctx.shadowBlur = 0;
+          break;
+        case 'ring': ctx.globalAlpha *= 0.6; ctx.lineWidth = 3 * (1 - k) + 1; ctx.shadowColor = q.c; ctx.shadowBlur = 8; ctx.beginPath(); ctx.arc(cx, cy, q.r * k, 0, 6.29); ctx.stroke(); ctx.shadowBlur = 0; break;
+        case 'warp': {
+          const d0 = q.d + q.v * t * (0.5 + t * 2), d1 = d0 + q.v * 0.08 * (1 + t * 4);
+          ctx.lineWidth = q.r * 0.7; ctx.lineCap = 'round';
+          ctx.beginPath(); ctx.moveTo(cx + Math.cos(q.a) * d0, cy + Math.sin(q.a) * d0); ctx.lineTo(cx + Math.cos(q.a) * d1, cy + Math.sin(q.a) * d1); ctx.stroke();
+          break;
+        }
+        case 'coin': {
+          ctx.translate(q.x, q.y); ctx.scale(Math.max(0.15, Math.abs(Math.cos(t * 9 + q.rot))), 1);
+          ctx.beginPath(); ctx.arc(0, 0, q.r, 0, 6.29); ctx.fill();
+          ctx.globalAlpha *= 0.6; ctx.fillStyle = '#fff7cc'; ctx.beginPath(); ctx.arc(-q.r * 0.25, -q.r * 0.25, q.r * 0.35, 0, 6.29); ctx.fill();
+          break;
+        }
+      }
+      return true;
+    });
+    ctx.restore();
+  };
+
+  const startEffect = (dir, now) => {
+    const f = ds.effect;
+    shards = null;
+    if (!f) return;
+    const dpr = devicePixelRatio || 1;
+    spawnParticles(f, canvas.width, canvas.height, dpr);
+    partsAt = now;
+    if (f.flash) flash = { c: f.flash, start: now };
+    if (f.t === 'shatter') shards = makeShards(canvas.width, canvas.height, dpr);
   };
 
   const drawSpinner = (now, cw, ch, dpr) => {
@@ -686,8 +1002,24 @@
     void b.offsetWidth;
     b.classList.add('pop');
     setTimeout(refreshActions, 600);
-    // Not logged in? The site answers with a login prompt; step aside to show it.
-    setTimeout(() => { if (promptCount() > before) ds.peek = true; }, 900);
+    // Not logged in? The site answers with a login prompt. Close it and say so,
+    // rather than leaving fill mode to show the site.
+    setTimeout(() => {
+      if (promptCount() <= before) return;
+      dismissPrompt();
+      liked[identity] = false;
+      b.classList.remove('on');
+      toast('Log in to like here: Accounts, top right', 2600);
+    }, 900);
+  };
+
+  const dismissPrompt = () => {
+    for (const d of document.querySelectorAll('[role="dialog"], [role="alertdialog"]')) {
+      const x = d.querySelector('[aria-label="Close" i], [aria-label*="close" i], [aria-label*="dismiss" i]');
+      if (x) (x.closest('button, [role="button"]') || x).click();
+    }
+    const target = document.activeElement && document.activeElement !== document.body ? document.activeElement : document;
+    for (const type of ['keydown', 'keyup']) target.dispatchEvent(new KeyboardEvent(type, { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
   };
 
   const likeOnce = () => {
@@ -696,11 +1028,16 @@
     if (!(st === null ? liked[identity] : st)) like();
   };
 
+  // Share copies the video's link (the overlay puts it on the clipboard), so you
+  // never leave the video for the site's share sheet.
   const share = () => {
-    const btn = findAction('share');
-    if (!btn) return;
-    btn.click();
-    ds.peek = true;
+    let url = location.href;
+    for (let el = video && video.parentElement, i = 0; el && i < 8; el = el.parentElement, i++) {
+      const a = el.querySelector('a[href*="/video/"], a[href*="/photo/"], a[href*="/reel/"], a[href*="/shorts/"]');
+      if (a) { url = a.href; break; }
+    }
+    console.debug('__ds:copy:' + url);
+    toast('Link copied');
   };
 
   acts.like.b.addEventListener('click', like);
@@ -799,11 +1136,10 @@
     return h('div', { class: 'c' }, av, h('div', { class: 'body' }, meta, h('div', { class: 'txt', text: c.text })), lk);
   };
 
-  const showState = (msg, withButton) => {
+  const showState = (msg) => {
     const box = h('div', { class: 'state' });
     if (!msg) box.append(h('div', { class: 'spin' }), h('div', { text: 'Loading comments…' }));
     else box.append(h('div', { text: msg }));
-    if (withButton) box.append(h('button', { text: 'Open on the site', onclick: () => { closeComments(); ds.peek = true; } }));
     listEl.replaceChildren(box);
     shownKeys = [];
   };
@@ -816,8 +1152,8 @@
     countEl.textContent = acts.comment.label.textContent;
     if (!items.length) {
       const waited = performance.now() - openedAt;
-      if (promptCount() > promptsBefore) showState('This site wants you to log in to see comments.', true);
-      else if (waited > 7000) showState(siteOpened ? 'No comments to show here.' : 'Couldn’t open comments for this video.', true);
+      if (promptCount() > promptsBefore) { dismissPrompt(); showState('Log in to see comments here: Accounts, top right.'); }
+      else if (waited > 7000) showState(siteOpened ? 'No comments to show here.' : 'Couldn’t open comments for this video.');
       else if (shownKeys.length || !listEl.querySelector('.spin')) showState('');
       return;
     }
@@ -997,11 +1333,10 @@
   const frame = (now) => {
     requestAnimationFrame(frame);
     // Checks run at most ~60 times a second; transitions get every frame so they stay smooth.
-    if (!anim && !photoFade && now - lastTick < 15) return;
+    if (!anim && !photoFade && !effectsLive() && now - lastTick < 15) return;
     lastTick = now;
     if (!canvas.isConnected) (document.body || document.documentElement).append(canvas, host);
     if (!ds.on) {
-      ds.peek = false;
       if (commentsOpen) closeComments();
       host.style.display = 'none';
       setShown(false);
@@ -1009,18 +1344,6 @@
       return;
     }
     host.style.display = 'block';
-    if (ds.peek) {
-      if (commentsOpen) closeComments();
-      if (shown) {
-        shown = false;
-        canvas.style.display = 'none';
-        col.style.display = 'none';
-        document.documentElement.classList.remove('__ds-filling');
-      }
-      back.style.display = 'block';
-      return;
-    }
-    back.style.display = 'none';
 
     if (pending && now - pending.at > 2500) pending = null;
     if (pending || anim || now - picked > 200 || !video || !video.isConnected) {
@@ -1102,15 +1425,22 @@
     const [cw, ch, dpr] = fit();
     const bh = Math.round(ch * (1 - SHEET_H * sheetP));
     if (anim) {
-      const p = Math.min(1, (now - anim.start) / SLIDE_MS);
+      const f = ds.effect || {};
+      const p = Math.min(1, (now - anim.start) / (f.ms || SLIDE_MS));
       const e = 1 - Math.pow(1 - p, 3);
-      const off = ch * e * anim.dir;
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, cw, ch);
-      ctx.drawImage(snap, 0, -off);
       // Until the site has the next video, the slot behind the outgoing one stays dark.
-      if (!pending) drawVideo(video, ch * anim.dir - off, cw, ch);
-      if (p >= 1) anim = null;
+      const incoming = (alpha = 1, transform) => {
+        if (pending) return;
+        ctx.save();
+        if (transform) transform();
+        drawVideo(video, 0, cw, ch, alpha);
+        ctx.restore();
+      };
+      (TRANSITIONS[f.t] || TRANSITIONS.slide)(p, e, anim.dir, cw, ch, incoming, f, dpr);
+      drawEffects(now, cw, ch);
+      if (p >= 1) { anim = null; shards = null; }
       drawn = '';
       return;
     }
@@ -1119,6 +1449,7 @@
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, cw, ch);
       if (now - pending.at > SLIDE_MS + 120) drawSpinner(now, cw, ch, dpr);
+      drawEffects(now, cw, ch);
       drawn = '';
       return;
     }
@@ -1131,8 +1462,9 @@
       photoShown = img ? { img, id: identity } : null;
     }
     const fading = photoFade && now - photoFade.start < 260;
+    const live = effectsLive();
     const key = [identity, frameCount(video), video.paused, cw, ch, sheetP].join('|');
-    if (key === drawn && !easing && !fading) return;
+    if (key === drawn && !easing && !fading && !live) return;
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, cw, ch);
     if (fading) {
@@ -1142,8 +1474,10 @@
       photoFade = null;
     }
     if (!drawVideo(video, 0, cw, bh, fading ? (now - photoFade.start) / 260 : 1)) { ctx.drawImage(snap, 0, 0); return; }
-    drawn = fading ? '' : key;
+    drawn = fading || live ? '' : key;
     if (video.paused && !commentsOpen) drawPlayIcon(cw, bh, dpr);
+    // Particles from the last scroll keep going over the new video for a moment.
+    if (live) drawEffects(now, cw, ch);
   };
   requestAnimationFrame(frame);
 

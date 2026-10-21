@@ -46,6 +46,7 @@
       <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.8" fill="none" stroke="currentColor" stroke-width="2" /><path d="M4.5 20a7.5 7.5 0 0 1 15 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></symbol>
       <symbol id="i-vol" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor" /><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></symbol>
       <symbol id="i-vol-low" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor" /><path d="M15.5 9a4 4 0 0 1 0 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></symbol>
+      <symbol id="i-case" viewBox="0 0 24 24"><path d="M5.5 9.5h13v8a1.5 1.5 0 0 1-1.5 1.5H7a1.5 1.5 0 0 1-1.5-1.5z M4.5 7.5a1 1 0 0 1 1-1h13a1 1 0 0 1 1 1v2h-15z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" /><path d="M10 12.5h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></symbol>
       <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor" /><path d="M16 9.5l5 5M21 9.5l-5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></symbol>
     </defs>
   </svg>
@@ -65,9 +66,10 @@
           <div class="vol-pop"><input type="range" id="volume" min="0" max="100" step="1" aria-label="Volume" /></div>
           <button class="icon-btn" id="btn-volume" title="Volume · click to mute"><svg><use id="vol-icon" href="#i-vol" /></svg></button>
         </div>
-        <button class="icon-btn" id="btn-back" title="Back"><svg><use href="#i-back" /></svg></button>
         <button class="icon-btn" id="btn-reload" title="Reload"><svg><use href="#i-reload" /></svg></button>
-        <button class="icon-btn" id="btn-fill" title="Fill mode: video fills the overlay (click for the site's own layout)"><svg><use href="#i-fill" /></svg></button>
+        <button class="icon-btn" id="btn-case" title="Scroll cases">
+          <svg viewBox="0 0 24 24"><use href="#i-case" /><circle class="case-ring-bg" cx="12" cy="12" r="10.5" pathLength="100" /><circle id="case-ring" cx="12" cy="12" r="10.5" pathLength="100" /></svg>
+        </button>
         <button class="icon-btn" id="btn-accounts" title="Accounts"><svg><use href="#i-user" /></svg><span class="acct-dot" id="acct-dot"></span></button>
         <button class="icon-btn" id="btn-settings" title="Settings"><svg><use href="#i-gear" /></svg></button>
         <button class="icon-btn" id="btn-size-reset" title="Back to the default size"><svg><use href="#i-restore" /></svg></button>
@@ -84,6 +86,15 @@
     <div id="progress"></div>
 
     <main id="stage">
+      <div id="stuck">
+        <div class="stuck-icon">🎬</div>
+        <b>No video here</b>
+        <p>The site may want you to log in, or it lost its feed.</p>
+        <div class="stuck-actions">
+          <button class="pill-btn" id="stuck-reload">Reload feed</button>
+          <button class="pill-btn ghost" id="stuck-login">Log in</button>
+        </div>
+      </div>
       <div id="cover">
         <div class="cover-icon"><svg><use id="cover-use" href="#i-yt" /></svg></div>
         <div class="cover-name" id="cover-name"></div>
@@ -232,12 +243,56 @@
           </div>
         </section>
 
+        <section>
+          <h3>Scroll cases</h3>
+          <label class="row">
+            <div class="row-text"><b>Case every 15 scrolls</b><small>Opens a case of scroll effects, from Mil-Spec blue up to ★ gold (0.5%)</small></div>
+            <input type="checkbox" class="switch" id="opt-cases" />
+          </label>
+          <div class="row">
+            <div class="row-text"><b>Your collection</b><small>Equip a scroll effect you've opened</small></div>
+            <button class="pill-btn" id="btn-open-collection">Open</button>
+          </div>
+        </section>
+
         <section class="footer">
           <button class="pill-btn ghost" id="btn-reset-pos">Reset position</button>
           <button class="pill-btn danger" id="btn-quit">Quit</button>
         </section>
       </div>
     </aside>
+
+    <aside id="collection" class="panel" aria-hidden="true">
+      <div class="settings-head">
+        <h2>Scroll effects</h2>
+        <button class="icon-btn" id="btn-collection-close" title="Close"><svg><use href="#i-close" /></svg></button>
+      </div>
+      <div class="settings-body">
+        <p class="panel-note" id="coll-count"></p>
+        <p class="panel-note small">Every 15 scrolls opens a case. Click an effect you own to equip it: it changes how the next video arrives when you scroll.</p>
+        <div class="coll-grid" id="coll-grid"></div>
+      </div>
+    </aside>
+
+    <div id="case" aria-hidden="true">
+      <div class="case-box">
+        <div class="case-head"><b>Scroll Case</b><span id="case-num"></span></div>
+        <div class="case-reel" id="case-reel">
+          <div class="case-strip" id="case-strip"></div>
+          <div class="case-marker"></div>
+        </div>
+        <div class="case-reveal">
+          <div id="case-result"></div>
+          <div class="case-rarity" id="case-rarity"></div>
+          <div class="case-name" id="case-name"></div>
+        </div>
+        <div class="case-actions">
+          <button class="pill-btn ghost" id="case-skip">Skip</button>
+          <button class="pill-btn primary" id="case-equip">Equip</button>
+          <button class="pill-btn" id="case-close">Keep scrolling</button>
+        </div>
+      </div>
+    </div>
 
     <div id="update-screen" aria-hidden="true">
       <div class="logo"></div>
@@ -251,6 +306,8 @@
   </div>
 
   <script src="page-scripts.js"></script>
+  <script src="effects.js"></script>
   <script src="app.js"></script>
+  <script src="cases.js"></script>
 </body>
 </html>

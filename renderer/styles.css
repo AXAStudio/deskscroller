@@ -75,7 +75,6 @@ svg { width: 18px; height: 18px; display: block; flex: none; }
 .icon-btn svg { width: 17px; height: 17px; }
 /* Four tabs plus the actions have to fit a 400px overlay. */
 #toolbar .icon-btn { width: 30px; }
-#btn-fill.on { color: var(--text); background: rgba(255, 255, 255, .08); }
 #btn-size-reset { display: none; }
 #app.resized #btn-size-reset { display: grid; }
 /* Make room for it at narrow widths: the active tab drops its label. */
@@ -85,9 +84,9 @@ svg { width: 18px; height: 18px; display: block; flex: none; }
   #app .tab.active span { max-width: 0; opacity: 0; }
   #app .tab.active { gap: 0; }
 }
-/* Below the default width: drop the feed's back / reload and tighten up so quit stays reachable. */
+/* Below the default width: drop reload and tighten up so quit stays reachable. */
 @container (max-width: 395px) {
-  #btn-back, #btn-reload { display: none; }
+  #btn-reload { display: none; }
   .tab { min-width: 24px; padding: 0 3px; }
   #toolbar .icon-btn { width: 28px; }
 }
@@ -366,10 +365,8 @@ svg { width: 18px; height: 18px; display: block; flex: none; }
 .ws-row-x:hover { background: var(--surface-hi); color: var(--text); }
 .ws-row-x svg { width: 14px; height: 14px; }
 
-/* Its own back / reload live in the address bar, and fill mode is for feeds only. */
-#app[data-site="web"] #btn-back,
-#app[data-site="web"] #btn-reload,
-#app[data-site="web"] #btn-fill { display: none; }
+/* Its own reload lives in the address bar. */
+#app[data-site="web"] #btn-reload { display: none; }
 
 webview.wv {
   position: absolute;
@@ -574,7 +571,8 @@ kbd {
   transition: transform .32s var(--ease);
 }
 #app.settings-open #settings,
-#app.accounts-open #accounts { transform: none; }
+#app.accounts-open #accounts,
+#app.collection-open #collection { transform: none; }
 
 .settings-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 12px 6px 18px; }
 .settings-head h2 { font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
@@ -894,3 +892,164 @@ input[type="range"]::-webkit-slider-thumb {
 #toast.show { opacity: 1; transform: translate(-50%, 0) scale(1); }
 #toast kbd { font-size: 10.5px; padding: 3px 5px; }
 #app.logging-in #toast { bottom: 76px; }
+
+/* ---------- No video (stays immersed instead of showing the site) ---------- */
+
+#stuck {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px;
+  text-align: center;
+  background:
+    radial-gradient(90% 50% at 50% 40%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 70%),
+    var(--bg);
+}
+#app.stuck:not(.on-home):not(.covered) #stuck { display: flex; }
+.stuck-icon { font-size: 34px; margin-bottom: 6px; }
+#stuck b { font-size: 16px; }
+#stuck p { color: var(--muted); font-size: 12.5px; max-width: 260px; }
+.stuck-actions { display: flex; gap: 8px; margin-top: 12px; }
+
+/* ---------- Scroll cases ---------- */
+
+#btn-case svg { width: 20px; height: 20px; overflow: visible; }
+#btn-case circle { fill: none; stroke-width: 2; }
+.case-ring-bg { stroke: rgba(255, 255, 255, .1); }
+#case-ring {
+  stroke: #e4ae39;
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  stroke-linecap: round;
+  transform: rotate(-90deg);
+  transform-origin: 12px 12px;
+  transition: stroke-dashoffset .4s var(--ease);
+}
+#btn-case.off #case-ring { stroke: transparent; }
+
+#case {
+  position: absolute;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  place-items: center;
+  /* The reel is far wider than the box; don't let it stretch the box. */
+  grid-template-columns: minmax(0, 1fr);
+  padding: 14px;
+  background: rgba(5, 5, 9, .82);
+  backdrop-filter: blur(10px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .25s;
+}
+#app.case-open #case { opacity: 1; pointer-events: auto; }
+.case-box {
+  width: 100%;
+  max-width: 420px;
+  min-width: 0;
+  padding: 14px 0 16px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #17171f, #0f0f15);
+  border: 1px solid var(--border);
+  box-shadow: 0 30px 60px -20px rgba(0, 0, 0, .8);
+  transform: translateY(10px) scale(.97);
+  transition: transform .35s var(--ease);
+}
+#app.case-open .case-box { transform: none; }
+.case-head { display: flex; align-items: baseline; gap: 8px; padding: 0 16px 10px; }
+.case-head b { font-size: 15px; letter-spacing: .02em; text-transform: uppercase; }
+.case-head span { color: var(--dim); font-size: 12px; }
+
+.case-reel {
+  position: relative;
+  height: 124px;
+  overflow: hidden;
+  background: #0a0a0e;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+}
+.case-strip { display: flex; gap: 4px; padding: 10px 0 10px 4px; will-change: transform; }
+.case-marker {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: #f5c542;
+  box-shadow: 0 0 10px #f5c542, 0 0 2px #fff;
+}
+.case-marker::before, .case-marker::after {
+  content: "";
+  position: absolute;
+  left: -6px;
+  border: 7px solid transparent;
+}
+.case-marker::before { top: 0; border-top-color: #f5c542; }
+.case-marker::after { bottom: 0; border-bottom-color: #f5c542; }
+
+.case-card {
+  --rc: #4b69ff;
+  position: relative;
+  flex: none;
+  width: 96px;
+  height: 104px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px 6px 10px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: radial-gradient(90% 70% at 50% 35%, color-mix(in srgb, var(--rc) 34%, transparent), transparent 75%), #15151c;
+  text-align: center;
+}
+.case-card::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 4px;
+  background: var(--rc);
+  box-shadow: 0 0 12px var(--rc);
+}
+.cc-icon { font-size: 36px; line-height: 1; filter: drop-shadow(0 4px 10px rgba(0, 0, 0, .6)); }
+.cc-name { font-size: 10.5px; font-weight: 650; line-height: 1.15; color: #e8e8f0; }
+.cc-name small { display: block; font-size: 9px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+.case-card.won { outline: 2px solid var(--rc); box-shadow: 0 0 22px var(--rc); }
+
+.case-reveal { display: none; flex-direction: column; align-items: center; gap: 4px; padding: 16px 16px 2px; }
+#case.revealed .case-reveal { display: flex; animation: case-in .45s var(--ease); }
+@keyframes case-in { from { opacity: 0; transform: scale(.85); } }
+.case-card.big { width: 132px; height: 140px; border-radius: 12px; }
+.case-card.big .cc-icon { font-size: 54px; }
+.case-card.big .cc-name { font-size: 12px; }
+.case-rarity { font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; margin-top: 6px; }
+.case-name { font-size: 15px; font-weight: 700; }
+#case.gold .case-card.big { animation: gold-shine 1.6s ease-in-out infinite; }
+@keyframes gold-shine { 50% { box-shadow: 0 0 34px #e4ae39, 0 0 70px rgba(228, 174, 57, .5); } }
+#case.gold .case-box { border-color: rgba(228, 174, 57, .5); box-shadow: 0 0 60px -10px rgba(228, 174, 57, .45); }
+
+.case-actions { display: flex; justify-content: center; gap: 8px; padding: 14px 16px 0; }
+#case-equip, #case-close { display: none; }
+#case.revealed #case-skip { display: none; }
+#case.revealed #case-equip, #case.revealed #case-close { display: inline-block; }
+#case-equip:disabled { opacity: .5; }
+
+/* The collection */
+.coll-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; padding: 0 4px 8px; }
+.coll-grid .case-card { width: auto; cursor: pointer; transition: transform .15s, outline-color .15s; }
+.coll-grid .case-card:hover { transform: translateY(-2px); }
+.coll-grid .case-card.locked { cursor: default; opacity: .35; filter: grayscale(.9); }
+.coll-grid .case-card.locked .cc-icon { filter: brightness(0) drop-shadow(0 0 0 transparent); opacity: .5; }
+.coll-grid .case-card.locked .cc-name { visibility: hidden; }
+.coll-grid .case-card.equipped { outline: 2px solid var(--rc); }
+.coll-grid .case-card.equipped::before { content: "Equipped"; position: absolute; top: 5px; left: 5px; font-size: 9px; font-weight: 700; color: #fff; background: var(--rc); padding: 1px 5px; border-radius: 4px; }
+.coll-grid .case-card[data-count]::before { content: attr(data-count); position: absolute; top: 5px; right: 6px; font-size: 10px; font-weight: 700; color: var(--muted); }
+.coll-grid .case-card.equipped[data-count]::before { content: "Equipped"; }

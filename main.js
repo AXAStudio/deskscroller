@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, screen, session, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, clipboard, globalShortcut, ipcMain, screen, session, Tray, Menu, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -60,6 +60,10 @@ const DEFAULTS = {
   skipAds: true,
   keepFeedsLoaded: false,
   volume: 100,
+  cases: true,        // a scroll case every 10 scrolls
+  scrolls: 0,
+  inventory: {},      // scroll effect id -> how many you've opened
+  effect: null,       // equipped scroll effect id
   lastSite: null,
   hotkeys: { ...DEFAULT_HOTKEYS },
 };
@@ -100,7 +104,8 @@ if (!app.requestSingleInstanceLock()) {
 function loadSettings() {
   try {
     const raw = JSON.parse(fs.readFileSync(SETTINGS_FILE(), 'utf8'));
-    return { ...DEFAULTS, ...raw, hotkeys: { ...DEFAULT_HOTKEYS, ...(raw.hotkeys || {}) } };
+    // Fill mode is the only mode now: feeds always fill the overlay.
+    return { ...DEFAULTS, ...raw, fill: true, hotkeys: { ...DEFAULT_HOTKEYS, ...(raw.hotkeys || {}) } };
   } catch {
     return { ...DEFAULTS, hotkeys: { ...DEFAULT_HOTKEYS } };
   }
@@ -875,10 +880,15 @@ ipcMain.handle('settings:set', (_e, patch) => {
   }
   if (typeof patch.autoHideToolbar === 'boolean') settings.autoHideToolbar = patch.autoHideToolbar;
   if (typeof patch.pauseOnHide === 'boolean') settings.pauseOnHide = patch.pauseOnHide;
-  if (typeof patch.fill === 'boolean') settings.fill = patch.fill;
   if (typeof patch.skipAds === 'boolean') settings.skipAds = patch.skipAds;
   if (typeof patch.keepFeedsLoaded === 'boolean') settings.keepFeedsLoaded = patch.keepFeedsLoaded;
   if (typeof patch.volume === 'number') settings.volume = Math.min(100, Math.max(0, Math.round(patch.volume)));
+  if (typeof patch.cases === 'boolean') settings.cases = patch.cases;
+  if (Number.isInteger(patch.scrolls) && patch.scrolls >= 0) settings.scrolls = patch.scrolls;
+  if (patch.inventory && typeof patch.inventory === 'object') {
+    settings.inventory = Object.fromEntries(Object.entries(patch.inventory).filter(([k, v]) => typeof k === 'string' && Number.isInteger(v) && v > 0));
+  }
+  if (patch.effect === null || typeof patch.effect === 'string') settings.effect = patch.effect || null;
   if (typeof patch.antiStretch === 'boolean' && patch.antiStretch !== settings.antiStretch) {
     settings.antiStretch = patch.antiStretch;
     applyStretch();
@@ -940,6 +950,11 @@ ipcMain.on('window:size', (_e, preset) => {
   setNativeBounds({ x, y, width, height });
 });
 ipcMain.on('app:quit', () => quit());
+// Share in fill mode copies the video's link (pages can't reach the clipboard
+// while the overlay doesn't have focus).
+ipcMain.on('clipboard:write', (_e, text) => {
+  if (typeof text === 'string' && /^https?:\/\//.test(text)) clipboard.writeText(text);
+});
 ipcMain.handle('update:check', () => {
   checkForUpdates();
   return updateState;

@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('ds', {
   sizePreset: (preset) => ipcRenderer.send('window:size', preset),
   quit: () => ipcRenderer.send('app:quit'),
   checkUpdates: () => ipcRenderer.invoke('update:check'),
+  copyText: (text) => ipcRenderer.send('clipboard:write', String(text)),
   accounts: () => ipcRenderer.invoke('accounts:get'),
   pageScript: (name) => ipcRenderer.invoke('page-script', name),
   logout: (site) => ipcRenderer.invoke('accounts:logout', site),
