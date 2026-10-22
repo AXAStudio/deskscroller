@@ -151,6 +151,8 @@
     // The equipped scroll effect's settings (effects.js), or null for the plain slide.
     effect: (fx) => `window.__dsFill && (window.__dsFill.effect = ${JSON.stringify(fx)})`,
     skipAds: (on) => `window.__dsFill && (window.__dsFill.skipAds = ${on ? 'true' : 'false'})`,
+    // Whether you're signed in to this site (actions like repost need it).
+    signedIn: (on) => `window.__dsFill && (window.__dsFill.signedIn = ${on ? 'true' : 'false'})`,
 
     slide: (dir) => `(() => {
       if (window.__dsFill && window.__dsFill.slide) window.__dsFill.slide(${dir > 0 ? 1 : -1});

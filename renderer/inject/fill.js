@@ -57,6 +57,7 @@
     like: () => icon({ ...line, d: HEART }),
     comment: () => icon({ ...line, d: 'M20 11.5a7.5 7.5 0 0 1-11.1 6.6L4.5 19.5l1.4-4.1A7.5 7.5 0 1 1 20 11.5z' }),
     share: () => icon({ ...line, d: 'M20.5 3.5 10 14M20.5 3.5 14 20.5l-4-6.5-6.5-4z' }),
+    repost: () => icon({ ...line, d: 'M17 3.5l3 3-3 3M4 11.5v-1a4 4 0 0 1 4-4h12M7 20.5l-3-3 3-3M20 12.5v1a4 4 0 0 1-4 4H4' }),
     soundOn: () => icon(SPEAKER, { ...line, d: 'M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11' }),
     soundOff: () => icon(SPEAKER, { ...line, d: 'M16 9.5l5 5M21 9.5l-5 5' }),
     close: () => icon({ ...line, d: 'M7 7l10 10M17 7 7 17' }),
@@ -134,6 +135,9 @@
     .count:empty { display: none; }
     .act.on .circ { color: #ff3b5c; }
     .act.on .circ path { fill: currentColor; }
+    .act.rp.on .circ { color: #ffc83d; }
+    .act.rp.on .circ path { fill: none; }
+    .act.rp.busy { pointer-events: none; opacity: .6; }
     .act.pop .circ { animation: pop .4s cubic-bezier(.2,.8,.2,1); }
     @keyframes pop { 35% { transform: scale(1.28); } }
 
@@ -259,8 +263,10 @@
     like: makeAct('Like', ICONS.like()),
     comment: makeAct('Comments', ICONS.comment()),
     share: makeAct('Share', ICONS.share()),
+    repost: makeAct('Repost', ICONS.repost()),
     sound: makeAct('Sound'),
   };
+  acts.repost.b.classList.add('rp');
 
   // The site's own mute button is underneath the canvas, so we keep our own.
   let soundOn = true;
@@ -960,6 +966,7 @@
   };
 
   const liked = {}; // video identity -> our guess, for sites that don't expose the state
+  const reposted = {}; // video identity -> whether it's reposted, as far as we know
   let refreshed = 0;
   const refreshActions = () => {
     const found = { like: findAction('like'), comment: findAction('comment'), share: findAction('share') };
@@ -983,6 +990,10 @@
         a.b.classList.toggle('on', st === null ? !!liked[identity] : st);
       }
     }
+    // Repost lives in TikTok's share sheet, so it's there whenever TikTok's share is.
+    const canRepost = !!found.share && found.share.matches('[data-e2e="share-icon"], [data-e2e="browse-share-icon"]');
+    acts.repost.b.style.display = canRepost ? '' : 'none';
+    acts.repost.b.classList.toggle('on', !!reposted[identity]);
   };
 
   // A real login prompt (not a toast, not our own UI): dialogs and Google sign-in links.
@@ -1040,8 +1051,44 @@
     toast('Link copied');
   };
 
+  // Repost (TikTok): the site keeps it in its share sheet. That sheet opens
+  // under the canvas, so we open it, press Repost and close it out of sight.
+  // The overlay tells us whether you're signed in (ds.signedIn).
+  const shareSheet = () => [...document.querySelectorAll('[role="dialog"]')].find((d) => d.querySelector('[data-e2e="share-repost"]'));
+  const closeSheet = () => {
+    for (const type of ['keydown', 'keyup']) document.dispatchEvent(new KeyboardEvent(type, { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+  };
+  const repost = async () => {
+    const b = acts.repost.b;
+    if (ds.signedIn === false) return toast('Log in to repost here: Accounts, top right', 2600);
+    const btn = findAction('share');
+    if (!btn || b.classList.contains('busy')) return;
+    const id = identity;
+    b.classList.add('busy');
+    try {
+      if (!shareSheet()) btn.click();
+      let item = null;
+      for (let i = 0; i < 30 && !(item = shareSheet() && shareSheet().querySelector('[data-e2e="share-repost"]')); i++) await sleep(50);
+      if (!item) return toast('Couldn’t repost this one', 2000);
+      // Once reposted, the same spot offers to undo it.
+      const undo = /remove|undo|delete/i.test(textOf(item));
+      (item.querySelector('[tabindex]') || item).click();
+      await sleep(250);
+      if (shareSheet()) closeSheet();
+      reposted[id] = !undo;
+      b.classList.toggle('on', !undo);
+      b.classList.remove('pop');
+      void b.offsetWidth;
+      b.classList.add('pop');
+      toast(undo ? 'Repost removed' : 'Reposted');
+    } finally {
+      b.classList.remove('busy');
+    }
+  };
+
   acts.like.b.addEventListener('click', like);
   acts.share.b.addEventListener('click', share);
+  acts.repost.b.addEventListener('click', repost);
   acts.comment.b.addEventListener('click', () => (commentsOpen ? closeComments() : openComments()));
 
   // ---------- comments: read the site's comment list, show it in our sheet ----------

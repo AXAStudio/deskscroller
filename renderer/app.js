@@ -132,6 +132,7 @@ function ensureView(site, url = PAGES[site].url) {
     if (site !== WEB) {
       run(site, PAGE_SCRIPTS.fill(true));
       run(site, PAGE_SCRIPTS.skipAds(state.settings.skipAds));
+      run(site, PAGE_SCRIPTS.signedIn(!!accounts[site]));
       Cases.applyEffect(site);
     }
     // A fresh page has lost any hold we put on it; re-apply what it should be doing.
@@ -730,6 +731,7 @@ function setAccounts(status) {
   const was = accounts;
   accounts = status;
   renderAccounts();
+  for (const site of Object.keys(SITES)) if (views[site]) run(site, PAGE_SCRIPTS.signedIn(!!status[site]));
   if (loginSite && status[loginSite]) finishLogin(loginSite);
   for (const site of Object.keys(SITES)) {
     if (was[site] && !status[site] && site !== loginSite) toast(`${SITES[site].service} disconnected`);
