@@ -379,6 +379,7 @@
   };
 
   let video = null, identity = '', picked = 0, lostAt = 0, drawn = '', shown = false;
+  let framedId = '';    // the video whose frame is on the canvas
   let pending = null;   // { dir, at, from, fromId, fromSrc } after a navigation, until the next video appears
   let anim = null;      // { dir, start } while the slide transition runs
   let sheetP = 0;       // 0..1, how far the video has shrunk for the comments sheet
@@ -433,6 +434,52 @@
     ctx.beginPath(); ctx.moveTo(cx - r * .3, cy - r * .45); ctx.lineTo(cx - r * .3, cy + r * .45); ctx.lineTo(cx + r * .5, cy); ctx.fill();
   };
 
+  // ---------- stills: what shows while the next video loads ----------
+  // Every feed keeps a still of each video under it until it plays (TikTok's
+  // cover, YouTube's thumbnail, Instagram's poster). Right after a scroll the
+  // site is already on the next video, so its still is right under the canvas:
+  // that shows until the first frame arrives, so a scroll never waits on a spinner.
+
+  const posterImgs = new Map(); // url -> Image, for stills that are CSS backgrounds or video posters
+  const posterAt = () => {
+    const cx = innerWidth / 2, cy = innerHeight / 2;
+    let best = null, area = innerWidth * innerHeight * 0.12;
+    for (const el of document.querySelectorAll('img, video[poster], [style*="background-image"]')) {
+      if (el.tagName === 'IMG' && !(el.complete && el.naturalWidth >= 32)) continue; // placeholders, not loaded yet
+      const r = el.getBoundingClientRect();
+      if (r.left > cx || r.right < cx || r.top > cy || r.bottom < cy) continue;
+      const a = visibleArea(r);
+      if (a > area) { area = a; best = el; }
+    }
+    if (!best) return null;
+    let img = best;
+    if (best.tagName !== 'IMG') {
+      const url = best.tagName === 'VIDEO' ? best.poster : (/url\("?(.*?)"?\)/.exec(getComputedStyle(best).backgroundImage) || [])[1];
+      if (!url) return null;
+      img = posterImgs.get(url);
+      if (!img) {
+        img = new Image();
+        img.src = url;
+        posterImgs.set(url, img);
+        if (posterImgs.size > 12) posterImgs.delete(posterImgs.keys().next().value);
+      }
+    }
+    if (!img.complete || !img.naturalWidth) return null;
+    return { url: img.currentSrc || img.src, isPhoto: true, frame: img, videoWidth: img.naturalWidth, videoHeight: img.naturalHeight, readyState: 4 };
+  };
+
+  // The still of the video we're moving to: not the one we just left.
+  let poster = null, posterChecked = 0;
+  const nextPoster = (now) => {
+    if (now - posterChecked > 80) {
+      posterChecked = now;
+      const p = posterAt();
+      poster = p && !(pending && p.url === pending.fromPoster) ? p : null;
+    }
+    return poster;
+  };
+  const hasFrame = (v) => !!v && v.readyState >= 2 && !!v.videoWidth;
+
   // Called right before navigating: freeze what's on screen and start pushing it
   // away at once, so the scroll answers instantly; the next video slides in
   // behind it as soon as the site has it.
@@ -443,7 +490,9 @@
     snap.width = canvas.width; snap.height = canvas.height;
     snapCtx.drawImage(canvas, 0, 0);
     const now = performance.now();
-    pending = { dir, at: now, from: video, fromId: identity, fromSrc: video && video.currentSrc };
+    pending = { dir, at: now, from: video, fromId: identity, fromSrc: video && video.currentSrc, fromPoster: (posterAt() || {}).url };
+    poster = null;
+    posterChecked = 0;
     anim = { dir, start: now };
     startEffect(dir, now);
   };
@@ -820,14 +869,20 @@
     if (f.t === 'shatter') shards = makeShards(canvas.width, canvas.height, dpr);
   };
 
-  const drawSpinner = (now, cw, ch, dpr) => {
-    const r = 14 * dpr, a = (now / 130) % (Math.PI * 2);
-    ctx.lineWidth = 3 * dpr;
-    ctx.lineCap = 'round';
-    ctx.strokeStyle = 'rgba(255,255,255,.15)';
-    ctx.beginPath(); ctx.arc(cw / 2, ch / 2, r, 0, Math.PI * 2); ctx.stroke();
-    ctx.strokeStyle = '#fff';
-    ctx.beginPath(); ctx.arc(cw / 2, ch / 2, r, a, a + 1.6); ctx.stroke();
+  // No still for the next video yet: a soft, dimmed blur of where you scrolled
+  // from (blurred once per scroll; blurring every frame would be wasted work).
+  const blurred = h('canvas');
+  let blurredFor = null;
+  const drawBackdrop = (cw, ch) => {
+    if (blurredFor !== pending) {
+      blurredFor = pending;
+      blurred.width = Math.max(1, Math.round(cw / 4));
+      blurred.height = Math.max(1, Math.round(ch / 4));
+      const b = blurred.getContext('2d');
+      b.filter = 'blur(6px) brightness(.45)';
+      b.drawImage(snap, 0, 0, blurred.width, blurred.height);
+    }
+    ctx.drawImage(blurred, 0, 0, cw, ch);
   };
 
   // ---------- playback that stays in sync with the site ----------
@@ -1392,7 +1447,7 @@
     }
     host.style.display = 'block';
 
-    if (pending && now - pending.at > 2500) pending = null;
+    if (pending && now - pending.at > 2500) { pending = null; queued = 0; }
     if (pending || anim || now - picked > 200 || !video || !video.isConnected) {
       picked = now;
       const v = pick();
@@ -1427,6 +1482,12 @@
     if (!video || (lostAt && now - lostAt > 1500 && !pending)) { setShown(false); video = null; drawn = ''; return; }
     if (!shown && video.readyState < 2) return;
     setShown(true);
+    // A saved-up scroll goes as soon as the video it waited for is showing.
+    if (queued && !pending && hasFrame(video)) {
+      queued--;
+      go(queuedDir);
+      return;
+    }
 
     // Slideshow pager, and no flipping through pictures while held in the background.
     const pages = video.isPhoto ? video.count : 0;
@@ -1477,12 +1538,14 @@
       const e = 1 - Math.pow(1 - p, 3);
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, cw, ch);
-      // Until the site has the next video, the slot behind the outgoing one stays dark.
+      // The next video slides in behind the outgoing one: its still until it has a frame.
       const incoming = (alpha = 1, transform) => {
-        if (pending) return;
+        const v = !pending && hasFrame(video) ? video : nextPoster(now);
+        if (!v && !pending) return;
         ctx.save();
         if (transform) transform();
-        drawVideo(video, 0, cw, ch, alpha);
+        if (v) drawVideo(v, 0, cw, ch, alpha);
+        else { ctx.globalAlpha = alpha; drawBackdrop(cw, ch); }
         ctx.restore();
       };
       (TRANSITIONS[f.t] || TRANSITIONS.slide)(p, e, anim.dir, cw, ch, incoming, f, dpr);
@@ -1492,11 +1555,26 @@
       return;
     }
     if (pending) {
-      // Slid out but the next video isn't here yet: show that it's coming.
+      // Slid out but the site hasn't switched videos yet: the next one's still if
+      // it has one, a soft blur if not. Never a spinner.
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, cw, ch);
-      if (now - pending.at > SLIDE_MS + 120) drawSpinner(now, cw, ch, dpr);
+      const p = nextPoster(now);
+      if (p) drawVideo(p, 0, cw, ch);
+      else drawBackdrop(cw, ch);
       drawEffects(now, cw, ch);
+      drawn = '';
+      return;
+    }
+    // The new video has no frame yet: its still stands in. (The same video
+    // briefly without one, say while looping, just keeps its last frame up.)
+    if (!hasFrame(video)) {
+      const p = identity !== framedId && nextPoster(now);
+      if (p) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, cw, ch);
+        drawVideo(p, 0, cw, bh);
+      }
       drawn = '';
       return;
     }
@@ -1521,6 +1599,7 @@
       photoFade = null;
     }
     if (!drawVideo(video, 0, cw, bh, fading ? (now - photoFade.start) / 260 : 1)) { ctx.drawImage(snap, 0, 0); return; }
+    framedId = identity;
     drawn = fading || live ? '' : key;
     if (video.paused && !commentsOpen) drawPlayIcon(cw, bh, dpr);
     // Particles from the last scroll keep going over the new video for a moment.
@@ -1528,13 +1607,25 @@
   };
   requestAnimationFrame(frame);
 
-  // ---------- wheel: one navigation per gesture ----------
+  // ---------- wheel ----------
+  // Scrolls saved up while the site catches up (see onWheel); frame() sends them.
+  let queued = 0, queuedDir = 1;
+  const go = (dir) => {
+    ds.slide(dir);
+    console.debug('__ds:nav:' + dir);
+  };
 
-  let locked = false, unlock = null;
+  // A trackpad swipe (and its momentum) moves one video. A mouse wheel moves one
+  // per notch, however fast you turn it.
+
+  let locked = false, unlock = null, lastNotch = 0;
   const onWheel = (e) => {
     e.preventDefault();
     clearTimeout(unlock);
     unlock = setTimeout(() => { locked = false; }, 280);
+    const notch = e.wheelDeltaY !== 0 && e.wheelDeltaY % 120 === 0 && e.deltaX === 0;
+    if (notch && e.timeStamp - lastNotch > 90) locked = false;
+    if (notch) lastNotch = e.timeStamp;
     if (locked) return;
     // Sideways on a slideshow flips through its pictures.
     if (video && video.isPhoto && Math.abs(e.deltaX) > Math.abs(e.deltaY) && Math.abs(e.deltaX) >= 4) {
@@ -1545,8 +1636,17 @@
     if (Math.abs(e.deltaY) < 4) return;
     locked = true;
     const dir = e.deltaY > 0 ? 1 : -1;
-    ds.slide(dir);
-    console.debug('__ds:nav:' + dir);
+    // Scrolling faster than the site builds videos (TikTok only has the next one
+    // ready) would land on nothing: wait for the one we're heading to, with at
+    // most a couple of scrolls saved up.
+    if (pending && !nextPoster(performance.now())) {
+      if (dir !== queuedDir) queued = 0;
+      queuedDir = dir;
+      queued = Math.min(2, queued + 1);
+      return;
+    }
+    queued = 0;
+    go(dir);
   };
   canvas.addEventListener('wheel', onWheel, { passive: false });
   col.addEventListener('wheel', onWheel, { passive: false });

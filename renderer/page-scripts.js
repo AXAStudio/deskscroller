@@ -31,9 +31,17 @@
       // Feeds that recycle one player (YouTube) return null and get a real wheel tick.
       const current = ${FIND_MEDIA};
       if (!current) return null;
-      const scrollable = (el) => {
-        const s = getComputedStyle(el);
-        return /(auto|scroll)/.test(s.overflowY) && el.scrollHeight > el.clientHeight + 4;
+      // The feed's scroller. TikTok locks it (overflow: hidden) behind its login
+      // prompt, but a script can still scroll it, so a locked one does as a fallback.
+      const scrollerOf = (from) => {
+        let locked = null;
+        for (let el = from; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
+          if (el.scrollHeight <= el.clientHeight + 4) continue;
+          const o = getComputedStyle(el).overflowY;
+          if (/(auto|scroll)/.test(o)) return el;
+          if (o === 'hidden' && !locked && el.scrollHeight > el.clientHeight * 1.5) locked = el;
+        }
+        return locked;
       };
 
       const { top, height } = current.getBoundingClientRect();
@@ -51,23 +59,19 @@
           let sib = dir > 0 ? item.nextElementSibling : item.previousElementSibling;
           while (sib && getComputedStyle(sib).scrollSnapAlign === 'none') sib = dir > 0 ? sib.nextElementSibling : sib.previousElementSibling;
           if (!sib) return null;
-          for (let el = item.parentElement; el && el !== document.documentElement; el = el.parentElement) {
-            if (scrollable(el)) {
-              el.scrollBy({ top: sib.getBoundingClientRect().top - item.getBoundingClientRect().top, behavior: 'instant' });
-              return 'snap';
-            }
-          }
-          return null;
+          const el = scrollerOf(item.parentElement);
+          if (!el) return null;
+          el.scrollBy({ top: sib.getBoundingClientRect().top - item.getBoundingClientRect().top, behavior: 'instant' });
+          return 'snap';
         }
         return null;
       }
       const delta = others[0].top - top;
 
-      for (let el = current.parentElement; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
-        if (scrollable(el)) {
-          el.scrollBy({ top: delta, behavior: 'instant' });
-          return 'container';
-        }
+      const el = scrollerOf(current.parentElement);
+      if (el) {
+        el.scrollBy({ top: delta, behavior: 'instant' });
+        return 'container';
       }
       const page = document.scrollingElement;
       if (page && page.scrollHeight > page.clientHeight + 4) {
